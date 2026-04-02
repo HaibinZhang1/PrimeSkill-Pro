@@ -1,8 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { AppException } from '../../common/app.exception';
 import { DatabaseService } from '../../common/database.service';
 import { buildPermissionPrefilter, type PermissionScope } from './permission-prefilter';
+import { demoSkillCatalog, type DemoSkillCatalogItem } from './demo-skill-catalog';
 import { SearchLlmPostRankService } from './search-llm-post-rank.service';
 
 export interface SearchRequest {
@@ -19,16 +19,22 @@ export interface SearchResultItem {
   skillId: number;
   skillVersionId: number;
   name: string;
+  summary: string;
+  category: string;
+  tags: string[];
   whyMatched: string;
   supportedTools: string[];
   visibilityReason: string;
   recommendedInstallMode: 'global' | 'project';
+  installCount: number;
   confidenceScore: number;
 }
 
 export interface SearchResponse {
   degraded: boolean;
   degradedReason?: string;
+  mode: 'featured' | 'search';
+  source: 'database' | 'demo_catalog';
   items: SearchResultItem[];
 }
 
@@ -43,6 +49,10 @@ interface Stage1Row {
   recall_score: number;
 }
 
+interface DatabaseCatalogAvailabilityRow {
+  ready: boolean;
+}
+
 @Injectable()
 export class SearchService {
   constructor(
@@ -55,23 +65,38 @@ export class SearchService {
   }
 
   async search(req: SearchRequest, scope: PermissionScope): Promise<SearchResponse> {
-    if (!req.query.trim()) {
-      throw new AppException('SEARCH_QUERY_INVALID', 400, 'query is required');
+    const normalizedReq = {
+      ...req,
+      query: req.query.trim()
+    };
+
+    const hasDatabaseCatalog = await this.hasDatabaseCatalog();
+
+    if (!normalizedReq.query) {
+      return hasDatabaseCatalog ? this.featuredFromDatabase(normalizedReq, scope) : this.featuredFromDemoCatalog(normalizedReq);
     }
 
-    const stage1Rows = await this.stage1Recall(req, scope);
-    const reranked = this.ruleRerank(stage1Rows, req);
+    if (!hasDatabaseCatalog) {
+      return this.searchFromDemoCatalog(normalizedReq);
+    }
+
+    const stage1Rows = await this.stage1Recall(normalizedReq, scope);
+    const reranked = this.ruleRerank(stage1Rows, normalizedReq);
     try {
-      const llmRanked = await this.llmPostRank.postRank(req.query.trim(), reranked);
+      const llmRanked = await this.llmPostRank.postRank(normalizedReq.query, reranked);
       return {
         degraded: false,
-        items: llmRanked.slice(0, req.pageSize)
+        mode: 'search',
+        source: 'database',
+        items: llmRanked.slice(0, normalizedReq.pageSize)
       };
     } catch {
       return {
         degraded: true,
         degradedReason: 'llm_unavailable',
-        items: reranked.slice(0, req.pageSize)
+        mode: 'search',
+        source: 'database',
+        items: reranked.slice(0, normalizedReq.pageSize)
       };
     }
   }
@@ -80,7 +105,7 @@ export class SearchService {
     const prefilter = this.buildStage1Query(scope);
     const offset = (req.page - 1) * req.pageSize;
     const candidateLimit = Math.min(100, req.pageSize * 4);
-    const queryPattern = `%${req.query.trim()}%`;
+    const queryPattern = `%${req.query}%`;
 
     const sql = `
       WITH prefiltered AS (
@@ -120,17 +145,12 @@ export class SearchService {
       LIMIT $5 OFFSET $6
     `;
 
-    const rows = await this.db.query<Stage1Row>(sql, [
-      ...prefilter.params,
-      queryPattern,
-      candidateLimit,
-      offset
-    ]);
+    const rows = await this.db.query<Stage1Row>(sql, [...prefilter.params, queryPattern, candidateLimit, offset]);
     return rows.rows;
   }
 
   private ruleRerank(rows: Stage1Row[], req: SearchRequest): SearchResultItem[] {
-    const tools = new Set((req.toolContext ?? []).map((t) => t.toLowerCase()));
+    const tools = new Set((req.toolContext ?? []).map((tool) => tool.toLowerCase()));
     const recommendedInstallMode: 'global' | 'project' = req.workspaceContext?.workspaceRegistryId
       ? 'project'
       : 'global';
@@ -146,16 +166,177 @@ export class SearchService {
           skillId: row.skill_id,
           skillVersionId: row.skill_version_id,
           name: row.name,
+          summary: row.summary ?? 'No summary available yet.',
+          category: matchedTools.length > 0 ? 'Tool-aligned' : 'General',
+          tags: row.supported_tools_json,
           whyMatched:
             matchedTools.length > 0
-              ? `命中关键词，并与工具上下文匹配: ${matchedTools.join(', ')}`
-              : '命中关键词与技能摘要',
+              ? `Matched your keywords and tool context: ${matchedTools.join(', ')}`
+              : 'Matched your keywords and marketplace profile.',
           supportedTools: row.supported_tools_json,
           visibilityReason: row.visibility_type === 'public' ? 'public_visible' : 'policy_allowed',
           recommendedInstallMode,
+          installCount: 0,
           confidenceScore
         } satisfies SearchResultItem;
       })
-      .sort((a, b) => b.confidenceScore - a.confidenceScore);
+      .sort((left, right) => right.confidenceScore - left.confidenceScore);
+  }
+
+  private async hasDatabaseCatalog(): Promise<boolean> {
+    const result = await this.db.query<DatabaseCatalogAvailabilityRow>(`
+      SELECT EXISTS(
+        SELECT 1
+        FROM skill s
+        JOIN skill_version sv ON sv.skill_id = s.id
+        LIMIT 1
+      ) AS ready
+    `);
+
+    return result.rows[0]?.ready ?? false;
+  }
+
+  private async featuredFromDatabase(req: SearchRequest, scope: PermissionScope): Promise<SearchResponse> {
+    const prefilter = this.buildStage1Query(scope);
+    const candidateLimit = Math.min(24, req.pageSize * 3);
+    const tools = new Set((req.toolContext ?? []).map((tool) => tool.toLowerCase()));
+    const recommendedInstallMode: 'global' | 'project' = req.workspaceContext?.workspaceRegistryId ? 'project' : 'global';
+
+    const rows = await this.db.query<Stage1Row>(
+      `
+        WITH prefiltered AS (
+          SELECT
+            s.id AS skill_id,
+            sv.id AS skill_version_id,
+            s.name,
+            s.summary,
+            s.visibility_type,
+            COALESCE(ssp.keyword_document, '') AS keyword_document,
+            COALESCE(ssp.supported_tools_json, '[]'::jsonb) AS supported_tools_json
+          FROM skill s
+          JOIN skill_version sv ON sv.id = s.current_version_id
+          LEFT JOIN skill_search_profile ssp ON ssp.skill_version_id = sv.id
+          WHERE ${prefilter.whereSql}
+        )
+        SELECT
+          skill_id,
+          skill_version_id,
+          name,
+          summary,
+          visibility_type,
+          keyword_document,
+          ARRAY(
+            SELECT jsonb_array_elements_text(supported_tools_json)
+          ) AS supported_tools_json,
+          0.5 AS recall_score
+        FROM prefiltered
+        ORDER BY skill_id ASC
+        LIMIT $4
+      `,
+      [...prefilter.params, candidateLimit]
+    );
+
+    const items = rows.rows
+      .map((row) => {
+        const matchedTools = row.supported_tools_json.filter((tool) => tools.has(tool.toLowerCase()));
+        return {
+          skillId: row.skill_id,
+          skillVersionId: row.skill_version_id,
+          name: row.name,
+          summary: row.summary ?? 'Marketplace recommendation',
+          category: matchedTools.length > 0 ? 'Recommended for your tools' : 'Featured',
+          tags: row.supported_tools_json,
+          whyMatched:
+            matchedTools.length > 0
+              ? `Recommended because it fits your local tools: ${matchedTools.join(', ')}`
+              : 'Featured to help you start with the marketplace.',
+          supportedTools: row.supported_tools_json,
+          visibilityReason: row.visibility_type === 'public' ? 'public_visible' : 'policy_allowed',
+          recommendedInstallMode,
+          installCount: 0,
+          confidenceScore: matchedTools.length > 0 ? 0.78 : 0.68
+        } satisfies SearchResultItem;
+      })
+      .sort((left, right) => right.confidenceScore - left.confidenceScore)
+      .slice(0, req.pageSize);
+
+    return {
+      degraded: false,
+      mode: 'featured',
+      source: 'database',
+      items
+    };
+  }
+
+  private featuredFromDemoCatalog(req: SearchRequest): SearchResponse {
+    return {
+      degraded: false,
+      mode: 'featured',
+      source: 'demo_catalog',
+      items: this.rankDemoCatalog('', req).slice(0, req.pageSize)
+    };
+  }
+
+  private searchFromDemoCatalog(req: SearchRequest): SearchResponse {
+    return {
+      degraded: true,
+      degradedReason: 'demo_catalog_fallback',
+      mode: 'search',
+      source: 'demo_catalog',
+      items: this.rankDemoCatalog(req.query, req).slice(0, req.pageSize)
+    };
+  }
+
+  private rankDemoCatalog(query: string, req: SearchRequest): SearchResultItem[] {
+    const normalizedQuery = query.trim().toLowerCase();
+    const tools = new Set((req.toolContext ?? []).map((tool) => tool.toLowerCase()));
+    const recommendedInstallMode: 'global' | 'project' = req.workspaceContext?.workspaceRegistryId ? 'project' : 'global';
+
+    return demoSkillCatalog
+      .map((item) => {
+        const searchable = [item.name, item.summary, item.category, ...item.tags, ...item.supportedTools].join(' ').toLowerCase();
+        const matchesQuery = !normalizedQuery || searchable.includes(normalizedQuery);
+        const matchedTools = item.supportedTools.filter((tool) => tools.has(tool.toLowerCase()));
+        const score =
+          (matchesQuery ? 0.62 : 0) +
+          (matchedTools.length > 0 ? 0.18 : 0) +
+          Math.min(0.16, item.installCount / 2000);
+
+        return {
+          skillId: item.skillId,
+          skillVersionId: item.skillVersionId,
+          name: item.name,
+          summary: item.summary,
+          category: item.category,
+          tags: item.tags,
+          whyMatched: this.buildDemoWhyMatched(item, normalizedQuery, matchedTools),
+          supportedTools: item.supportedTools,
+          visibilityReason: 'demo_catalog',
+          recommendedInstallMode: recommendedInstallMode === 'project' ? 'project' : item.recommendedInstallMode,
+          installCount: item.installCount,
+          confidenceScore: Number(Math.min(0.97, score).toFixed(3))
+        } satisfies SearchResultItem;
+      })
+      .filter((item) => !normalizedQuery || item.confidenceScore >= 0.62)
+      .sort((left, right) => {
+        if (right.confidenceScore !== left.confidenceScore) {
+          return right.confidenceScore - left.confidenceScore;
+        }
+        return right.installCount - left.installCount;
+      });
+  }
+
+  private buildDemoWhyMatched(item: DemoSkillCatalogItem, normalizedQuery: string, matchedTools: string[]): string {
+    if (!normalizedQuery) {
+      return matchedTools.length > 0
+        ? `Featured for your current setup: ${matchedTools.join(', ')}`
+        : 'Featured as a starter skill for marketplace demos.';
+    }
+
+    if (matchedTools.length > 0) {
+      return `Matched "${normalizedQuery}" and aligns with ${matchedTools.join(', ')}.`;
+    }
+
+    return `Matched "${normalizedQuery}" in the curated marketplace demo catalog.`;
   }
 }

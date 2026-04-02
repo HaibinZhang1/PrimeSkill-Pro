@@ -10,3 +10,18 @@ coverage
 .env.*
 !.env.example
 .superpowers/
+
+# Rust / Tauri
+**/target/
+**/src-tauri/target/
+**/src-tauri/gen/
+**/src-tauri/icons/
+
+# Vite / Frontend
+dist/
+dist-ssr/
+*.local
+
+# OS files
+.DS_Store
+Thumbs.db

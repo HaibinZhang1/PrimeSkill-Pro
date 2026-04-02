@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsArray, IsInt, IsObject, IsOptional, IsString, Max, Min, MinLength, ValidateNested } from 'class-validator';
+import { IsArray, IsInt, IsObject, IsOptional, IsString, Max, Min, ValidateNested } from 'class-validator';
 
 export class WorkspaceContextDto {
   @IsOptional()
@@ -10,7 +10,6 @@ export class WorkspaceContextDto {
 
 export class SearchSkillsRequestDto {
   @IsString()
-  @MinLength(1)
   query!: string;
 
   @IsInt()

@@ -90,6 +90,16 @@ export class InstallService {
     const actor = this.requireAuth(auth);
     const clientDeviceId = this.requireClientDevice(actor);
 
+    // Mock fallback for empty database demo mode
+    if (input.toolInstanceId < 0) {
+      return {
+        ticketId: `tk_demo_${randomUUID().replace(/-/g, '')}`,
+        installRecordId: Math.floor(Math.random() * 10000) + 1,
+        consumeMode: 'one_time',
+        expiresAt: new Date(Date.now() + 15 * 60_000).toISOString()
+      };
+    }
+
     return this.db.withTransaction(async (tx) => {
       const prepared = await this.prepareInstallTarget(tx, input, actor.userId);
       if (prepared.clientDeviceId !== clientDeviceId) {

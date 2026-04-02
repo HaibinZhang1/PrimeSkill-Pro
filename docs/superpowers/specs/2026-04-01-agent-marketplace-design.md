@@ -7,7 +7,6 @@
 - 用户：主要是 Windows 终端用户，需支持扫描本地 AI 工具路径并一键安装 Skill。
 - 规模：500-3000 用户，约 1 万级 Skill。
 - 技术路线：TypeScript + React + Tauri + Rust + NestJS + PostgreSQL + pgvector + Redis（任务队列/缓存）。
-- 研发环境：开发机主要为 macOS，需要支持跨平台开发、联调和测试。
 
 ## 2. 推荐总体架构
 
@@ -1113,7 +1112,7 @@ LLM 不负责“从零搜索”，只负责整理候选结果，降低幻觉。
 - Codex 全局目录型 Skill
   - 当前公开稳定约定主要是 `AGENTS.md`，不建议先发明一个平台私有目录标准。
 
-## 10. Mac 开发、Windows 用户端、Linux 服务端的研发测试方案
+## 10. Windows 用户端、Linux 服务端的研发测试方案
 
 ### 10.1 开发分层策略
 
