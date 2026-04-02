@@ -1,0 +1,10 @@
+[package]
+name = "prime_skill_native_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "prime_skill_native_core"
+path = "src/lib.rs"
+
+[dependencies]

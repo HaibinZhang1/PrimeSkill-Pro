@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://primeskill.local/contracts/ipc/commands.schema.json",
+  "title": "Tauri IPC Commands",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["commands"],
+  "properties": {
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "requestSchema", "responseSchema"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "scan_tools",
+              "list_tool_instances",
+              "select_workspace",
+              "preview_install_target",
+              "apply_install_ticket",
+              "upgrade_installation",
+              "uninstall_installation",
+              "rollback_installation",
+              "verify_installation",
+              "list_local_installs"
+            ]
+          },
+          "requestSchema": { "type": "string" },
+          "responseSchema": { "type": "string" }
+        }
+      }
+    }
+  }
+}

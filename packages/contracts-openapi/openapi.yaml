@@ -1,0 +1,548 @@
+openapi: 3.1.0
+info:
+  title: PrimeSkill Pro API
+  version: 1.0.0
+  description: Enterprise intranet Agent Skills marketplace API contracts.
+servers:
+  - url: https://intranet.primeskill.local
+security:
+  - BearerAuth: []
+
+paths:
+  /api/desktop/install-tickets:
+    post:
+      summary: Create install ticket (desktop)
+      operationId: createDesktopInstallTicket
+      tags: [DesktopInstall]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInstallTicketRequest'
+      responses:
+        '200':
+          description: Ticket issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateInstallTicketResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/native/install-tickets/{ticketId}/manifest:
+    get:
+      summary: Fetch install manifest (native)
+      operationId: getNativeInstallManifest
+      tags: [NativeInstall]
+      security:
+        - BearerAuth: []
+          DeviceTokenAuth: []
+      parameters:
+        - in: path
+          name: ticketId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Manifest payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstallManifestResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '410':
+          $ref: '#/components/responses/GoneError'
+
+  /api/native/install-tickets/{ticketId}/consume:
+    post:
+      summary: Report install stage progress (native)
+      operationId: consumeNativeInstallTicket
+      tags: [NativeInstall]
+      security:
+        - BearerAuth: []
+          DeviceTokenAuth: []
+      parameters:
+        - in: path
+          name: ticketId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsumeInstallTicketRequest'
+      responses:
+        '200':
+          description: Stage accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsumeInstallTicketResponse'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '412':
+          $ref: '#/components/responses/PreconditionError'
+
+  /api/native/install-operations/{installRecordId}/report:
+    post:
+      summary: Report install operation final state (native)
+      operationId: reportNativeInstallOperation
+      tags: [NativeInstall]
+      security:
+        - BearerAuth: []
+          DeviceTokenAuth: []
+      parameters:
+        - in: path
+          name: installRecordId
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportInstallOperationRequest'
+      responses:
+        '200':
+          description: Final state accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResponse'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /api/desktop/search/skills:
+    post:
+      summary: Search skills for desktop user
+      operationId: searchSkills
+      tags: [DesktopSearch]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchSkillsRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchSkillsResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableError'
+
+  /api/admin/ai-tool-templates:
+    post:
+      summary: Publish immutable tool template revision
+      operationId: publishAiToolTemplate
+      tags: [AdminTemplate]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishTemplateRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishTemplateResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    DeviceTokenAuth:
+      type: apiKey
+      in: header
+      name: X-Device-Token
+
+  responses:
+    UnauthorizedError:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ForbiddenError:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFoundError:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    GoneError:
+      description: Gone / expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ConflictError:
+      description: Conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ValidationError:
+      description: Validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PreconditionError:
+      description: Stage order violation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServiceUnavailableError:
+      description: Service unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    CreateInstallTicketRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - skillId
+        - skillVersionId
+        - operationType
+        - targetScope
+        - toolInstanceId
+        - idempotencyKey
+      properties:
+        skillId:
+          type: integer
+          format: int64
+        skillVersionId:
+          type: integer
+          format: int64
+        operationType:
+          type: string
+          enum: [install, upgrade, uninstall, rollback]
+        targetScope:
+          type: string
+          enum: [global, project]
+        toolInstanceId:
+          type: integer
+          format: int64
+        workspaceRegistryId:
+          type: integer
+          format: int64
+        idempotencyKey:
+          type: string
+          minLength: 12
+
+    CreateInstallTicketResponse:
+      type: object
+      required: [ticketId, installRecordId, consumeMode, expiresAt]
+      properties:
+        ticketId:
+          type: string
+        installRecordId:
+          type: integer
+          format: int64
+        consumeMode:
+          type: string
+          enum: [one_time, idempotent_retry]
+        retryToken:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+
+    InstallManifestResponse:
+      type: object
+      required: [ticketId, installRecordId, package, template, variables, verifyRules]
+      properties:
+        ticketId:
+          type: string
+        installRecordId:
+          type: integer
+          format: int64
+        package:
+          type: object
+          required: [uri, checksum]
+          properties:
+            uri:
+              type: string
+            checksum:
+              type: string
+            signature:
+              type: string
+        template:
+          type: object
+          required: [templateId, templateCode, templateRevision, targetPathTemplate, packagingMode, contentManagementMode]
+          properties:
+            templateId:
+              type: integer
+              format: int64
+            templateCode:
+              type: string
+            templateRevision:
+              type: integer
+            targetPathTemplate:
+              type: string
+            filenameTemplate:
+              type: string
+            packagingMode:
+              type: string
+            contentManagementMode:
+              type: string
+        variables:
+          type: object
+          additionalProperties:
+            type: string
+        verifyRules:
+          type: array
+          items:
+            type: string
+        retryToken:
+          type: string
+
+    ConsumeInstallTicketRequest:
+      type: object
+      additionalProperties: false
+      required: [installRecordId, stage, result, traceId]
+      properties:
+        installRecordId:
+          type: integer
+          format: int64
+        stage:
+          type: string
+          enum: [ticket_issued, downloading, staging, verifying, committing]
+        result:
+          type: string
+          enum: [ok, failed]
+        traceId:
+          type: string
+        telemetry:
+          type: object
+          additionalProperties:
+            type: number
+        retryToken:
+          type: string
+
+    ConsumeInstallTicketResponse:
+      type: object
+      required: [nextAction]
+      properties:
+        nextAction:
+          type: string
+          enum: [continue, abort]
+
+    ReportInstallOperationRequest:
+      type: object
+      additionalProperties: false
+      required: [finalStatus, traceId]
+      properties:
+        finalStatus:
+          type: string
+          enum: [success, failed, rolled_back, cancelled]
+        resolvedTargetPath:
+          type: string
+        managedFileHashes:
+          type: array
+          items:
+            type: string
+        backupSnapshotPath:
+          type: string
+        traceId:
+          type: string
+
+    SearchSkillsRequest:
+      type: object
+      additionalProperties: false
+      required: [query, page, pageSize]
+      properties:
+        query:
+          type: string
+          minLength: 1
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+          maximum: 50
+        toolContext:
+          type: array
+          items:
+            type: string
+        workspaceContext:
+          type: object
+          properties:
+            workspaceRegistryId:
+              type: integer
+              format: int64
+
+    SearchSkillsResponse:
+      type: object
+      required: [degraded, items]
+      properties:
+        degraded:
+          type: boolean
+        degradedReason:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+            required: [skillId, skillVersionId, name, whyMatched, supportedTools, visibilityReason, recommendedInstallMode, confidenceScore]
+            properties:
+              skillId:
+                type: integer
+                format: int64
+              skillVersionId:
+                type: integer
+                format: int64
+              name:
+                type: string
+              whyMatched:
+                type: string
+              supportedTools:
+                type: array
+                items:
+                  type: string
+              visibilityReason:
+                type: string
+              recommendedInstallMode:
+                type: string
+              confidenceScore:
+                type: number
+
+    PublishTemplateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - toolId
+        - templateCode
+        - templateRevision
+        - osType
+        - artifactType
+        - scopeType
+        - templateName
+        - targetPathTemplate
+        - packagingMode
+        - contentManagementMode
+        - pathVariables
+      properties:
+        toolId:
+          type: integer
+          format: int64
+        templateCode:
+          type: string
+        templateRevision:
+          type: integer
+        osType:
+          type: string
+        artifactType:
+          type: string
+        scopeType:
+          type: string
+          enum: [global, project]
+        templateName:
+          type: string
+        targetPathTemplate:
+          type: string
+        filenameTemplate:
+          type: string
+        packagingMode:
+          type: string
+        contentManagementMode:
+          type: string
+        managedBlockMarker:
+          type: string
+        pathVariables:
+          type: array
+          items:
+            type: string
+        minToolVersion:
+          type: string
+        maxToolVersion:
+          type: string
+        priority:
+          type: integer
+        isDefault:
+          type: boolean
+        releaseStatus:
+          type: string
+          enum: [active, retired, draft]
+        verificationStatus:
+          type: string
+          enum: [verified, candidate, deprecated]
+        sourceReferenceUrl:
+          type: string
+
+    PublishTemplateResponse:
+      type: object
+      required: [templateId]
+      properties:
+        templateId:
+          type: integer
+          format: int64
+
+    AckResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+
+    ErrorResponse:
+      type: object
+      required: [code, message, requestId, traceId]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        requestId:
+          type: string
+        traceId:
+          type: string

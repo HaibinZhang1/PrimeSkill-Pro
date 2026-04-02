@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: P0 contracts + migrations
+        run: ./scripts/verify_foundation.sh
+      - name: search_permission_prefilter_test
+        run: ./scripts/ci/search_permission_prefilter_test.sh
+
+  windows-checks:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install_lifecycle_e2e_windows
+        shell: pwsh
+        run: ./scripts/ci/install_lifecycle_e2e_windows.ps1

@@ -1,0 +1,101 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: prime-postgres
+    environment:
+      POSTGRES_DB: primeskill
+      POSTGRES_USER: primeskill
+      POSTGRES_PASSWORD: primeskill
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U primeskill -d primeskill']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    container_name: prime-redis
+    ports:
+      - '6379:6379'
+
+  minio:
+    image: minio/minio:latest
+    container_name: prime-minio
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio_data:/data
+
+  db-init:
+    image: pgvector/pgvector:pg16
+    container_name: prime-db-init
+    working_dir: /workspace
+    environment:
+      DATABASE_URL: postgresql://primeskill:primeskill@postgres:5432/primeskill
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../..:/workspace
+    command: ['/bin/bash', '-lc', './scripts/apply_migrations_order.sh']
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: infra/docker/backend.Dockerfile
+    container_name: prime-backend
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://primeskill:primeskill@postgres:5432/primeskill
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      db-init:
+        condition: service_completed_successfully
+    ports:
+      - '3000:3000'
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/worker.Dockerfile
+    container_name: prime-worker
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://primeskill:primeskill@postgres:5432/primeskill
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      db-init:
+        condition: service_completed_successfully
+
+  nginx:
+    build:
+      context: ../..
+      dockerfile: infra/docker/nginx.Dockerfile
+    container_name: prime-nginx
+    depends_on:
+      - backend
+    ports:
+      - '8080:80'
+
+volumes:
+  postgres_data:
+  minio_data:

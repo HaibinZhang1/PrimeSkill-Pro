@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://primeskill.local/contracts/ipc/events.schema.json",
+  "title": "Tauri IPC Events",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["events"],
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "payload"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "install.progress",
+              "install.stage_changed",
+              "install.finalized",
+              "scan.finished",
+              "registry.changed"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "required": ["installRecordId", "ticketId", "traceId", "stage", "timestamp"],
+            "properties": {
+              "installRecordId": { "type": "integer" },
+              "ticketId": { "type": "string" },
+              "traceId": { "type": "string" },
+              "stage": { "type": "string" },
+              "timestamp": { "type": "string", "format": "date-time" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

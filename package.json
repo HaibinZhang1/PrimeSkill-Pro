@@ -1,0 +1,30 @@
+{
+  "name": "prime-skill-pro",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev:backend": "pnpm --filter @prime/backend dev",
+    "dev:worker": "pnpm --filter @prime/search-worker dev",
+    "dev:admin": "pnpm --filter @prime/admin-web dev -- --host 0.0.0.0",
+    "dev:desktop": "pnpm --filter @prime/desktop-ui dev -- --host 0.0.0.0",
+    "dev:desktop:tauri": "pnpm --filter @prime/desktop-ui tauri:dev",
+    "dev:infra": "./scripts/dev/up_local_stack.sh",
+    "dev:infra:down": "./scripts/dev/down_local_stack.sh",
+    "dev:stack": "pnpm --parallel --stream --filter @prime/backend --filter @prime/search-worker --filter @prime/admin-web run dev",
+    "docker:up": "docker compose -f infra/docker/docker-compose.yml up --build",
+    "docker:down": "docker compose -f infra/docker/docker-compose.yml down -v",
+    "test:docker:acceptance": "./scripts/ci/docker_acceptance_test.sh",
+    "backend:start": "pnpm --filter @prime/backend start",
+    "backend:test:integration": "pnpm --filter @prime/backend test:integration",
+    "worker:test": "pnpm --filter @prime/search-worker test",
+    "test:p0:contracts": "./tests/foundation/p0_contracts_test.sh",
+    "test:p0:migrations": "./tests/foundation/p0_migrations_test.sh",
+    "test:p0:startup": "./tests/foundation/p0_startup_skeleton_test.sh",
+    "test:p0:tauri": "./tests/foundation/p0_tauri_host_test.sh",
+    "test:p0:docker-init": "./tests/foundation/p0_docker_init_test.sh",
+    "test:worker:queue-smoke": "./scripts/ci/search_worker_queue_smoke_test.sh",
+    "test:startup": "./scripts/ci/startup_smoke_test.sh",
+    "test:p0": "./tests/foundation/p0_contracts_test.sh && ./tests/foundation/p0_migrations_test.sh && ./tests/foundation/p0_startup_skeleton_test.sh && ./tests/foundation/p0_tauri_host_test.sh && ./tests/foundation/p0_docker_init_test.sh",
+    "verify:foundation": "./scripts/verify_foundation.sh"
+  }
+}

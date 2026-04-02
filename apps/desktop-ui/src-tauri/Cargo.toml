@@ -1,0 +1,15 @@
+[package]
+name = "prime_skill_desktop"
+version = "0.1.0"
+description = "PrimeSkill Pro desktop shell"
+authors = ["OpenAI Codex"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.0.2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2.0.6", features = [] }
+prime_skill_native_core = { path = "../../native-core" } # path dependency to apps/native-core
+

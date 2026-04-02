@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://primeskill.local/contracts/queue-events.schema.json",
+  "title": "Queue Event Contracts",
+  "type": "object",
+  "required": ["events"],
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/definitions/Stage1IndexJob" },
+          { "$ref": "#/definitions/Stage2IndexJob" },
+          { "$ref": "#/definitions/SearchAssembleJob" },
+          { "$ref": "#/definitions/ReconcileJob" }
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "Base": {
+      "type": "object",
+      "required": ["jobType", "traceId"],
+      "properties": {
+        "jobType": { "type": "string" },
+        "traceId": { "type": "string" }
+      }
+    },
+    "Stage1IndexJob": {
+      "allOf": [
+        { "$ref": "#/definitions/Base" },
+        {
+          "type": "object",
+          "required": ["jobType", "jobId", "skillVersionId", "retry"],
+          "properties": {
+            "jobType": { "const": "Stage1IndexJob" },
+            "jobId": { "type": "string" },
+            "skillVersionId": { "type": "integer" },
+            "retry": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "Stage2IndexJob": {
+      "allOf": [
+        { "$ref": "#/definitions/Base" },
+        {
+          "type": "object",
+          "required": ["jobType", "jobId", "skillVersionId", "chunkPolicy"],
+          "properties": {
+            "jobType": { "const": "Stage2IndexJob" },
+            "jobId": { "type": "string" },
+            "skillVersionId": { "type": "integer" },
+            "chunkPolicy": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "SearchAssembleJob": {
+      "allOf": [
+        { "$ref": "#/definitions/Base" },
+        {
+          "type": "object",
+          "required": ["jobType", "requestId", "userId", "query", "permissionDigest", "candidateIds"],
+          "properties": {
+            "jobType": { "const": "SearchAssembleJob" },
+            "requestId": { "type": "string" },
+            "userId": { "type": "integer" },
+            "query": { "type": "string" },
+            "permissionDigest": { "type": "string" },
+            "candidateIds": {
+              "type": "array",
+              "items": { "type": "integer" }
+            }
+          }
+        }
+      ]
+    },
+    "ReconcileJob": {
+      "allOf": [
+        { "$ref": "#/definitions/Base" },
+        {
+          "type": "object",
+          "required": ["jobType", "clientDeviceId", "installRecordId", "reason"],
+          "properties": {
+            "jobType": { "const": "ReconcileJob" },
+            "clientDeviceId": { "type": "integer" },
+            "installRecordId": { "type": "integer" },
+            "reason": { "type": "string" }
+          }
+        }
+      ]
+    }
+  }
+}
