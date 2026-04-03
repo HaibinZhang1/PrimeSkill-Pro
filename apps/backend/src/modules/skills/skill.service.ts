@@ -4,6 +4,8 @@ import type { PoolClient } from 'pg';
 import { AppException } from '../../common/app.exception';
 import { DatabaseService } from '../../common/database.service';
 import type { AuthContext } from '../../common/http.types';
+import { buildArtifactPackage } from './artifact-package.util';
+import { SkillArtifactService } from './skill-artifact.service';
 import { SkillIndexQueueService } from './skill-index-queue.service';
 import type {
   ApproveReviewRequestDto,
@@ -22,6 +24,7 @@ const ACTIVE_REVIEW_TASK_STATUSES = ['created', 'assigned', 'in_review'];
 
 interface SkillRow {
   id: number;
+  skill_key: string;
   owner_user_id: number;
   owner_department_id: number | null;
   status: 'draft' | 'pending_review' | 'approved' | 'published' | 'rejected' | 'archived';
@@ -48,7 +51,8 @@ interface ReviewTaskContextRow {
 export class SkillService {
   constructor(
     @Inject(DatabaseService) private readonly db: DatabaseService,
-    @Inject(SkillIndexQueueService) private readonly skillIndexQueueService: SkillIndexQueueService
+    @Inject(SkillIndexQueueService) private readonly skillIndexQueueService: SkillIndexQueueService,
+    @Inject(SkillArtifactService) private readonly skillArtifactService: SkillArtifactService
   ) {}
 
   async createSkill(input: CreateSkillRequestDto, auth: AuthContext): Promise<CreateSkillResponse> {
@@ -121,6 +125,8 @@ export class SkillService {
         throw new AppException('SKILL_STATUS_CONFLICT', 409, 'archived skill cannot accept new versions');
       }
 
+      const packageInput = this.resolveVersionPackageInput(skill.skill_key, input);
+
       try {
         const inserted = await tx.query<{
           id: number;
@@ -155,23 +161,36 @@ export class SkillService {
           [
             skillId,
             input.version,
-            input.packageUri,
+            packageInput.packageUri,
             JSON.stringify(input.manifestJson ?? {}),
             input.readmeText ?? null,
             input.changelog ?? null,
             JSON.stringify(input.aiToolsJson ?? []),
             JSON.stringify(input.installModeJson ?? {}),
-            input.checksum,
+            packageInput.checksum,
             input.signature ?? null,
             auth.userId
           ]
         );
 
+        if (packageInput.internalArtifact) {
+          await this.skillArtifactService.createArtifact(tx, {
+            skillVersionId: inserted.rows[0].id,
+            artifactKey: packageInput.internalArtifact.artifactKey,
+            fileName: packageInput.internalArtifact.fileName,
+            built: packageInput.internalArtifact.built,
+            actorUserId: auth.userId
+          });
+        }
+
         return {
           skillVersionId: inserted.rows[0].id,
           reviewStatus: inserted.rows[0].review_status,
           stage1IndexStatus: inserted.rows[0].stage1_index_status,
-          stage2IndexStatus: inserted.rows[0].stage2_index_status
+          stage2IndexStatus: inserted.rows[0].stage2_index_status,
+          packageUri: packageInput.packageUri,
+          checksum: packageInput.checksum,
+          packageSource: packageInput.packageSource
         };
       } catch (error) {
         this.rethrowKnownDatabaseErrors(error, {
@@ -407,7 +426,7 @@ export class SkillService {
   private async loadSkillForUpdate(tx: PoolClient, skillId: number): Promise<SkillRow> {
     const result = await tx.query<SkillRow>(
       `
-        SELECT id, owner_user_id, owner_department_id, status
+        SELECT id, skill_key, owner_user_id, owner_department_id, status
         FROM skill
         WHERE id = $1
         FOR UPDATE
@@ -510,6 +529,58 @@ export class SkillService {
 
   private hasSkillAdminRole(auth: AuthContext) {
     return auth.roleCodes.some((role) => SKILL_ADMIN_ROLES.has(role));
+  }
+
+  private resolveVersionPackageInput(skillKey: string, input: CreateSkillVersionRequestDto) {
+    const hasInlineArtifact = Boolean(input.artifact);
+    const hasExternalPackage = Boolean(input.packageUri || input.checksum);
+
+    if (hasInlineArtifact && hasExternalPackage) {
+      throw new AppException(
+        'SKILL_VERSION_PACKAGE_CONFLICT',
+        409,
+        'artifact and packageUri/checksum cannot be submitted together'
+      );
+    }
+
+    if (!hasInlineArtifact && (!input.packageUri || !input.checksum)) {
+      throw new AppException(
+        'SKILL_VERSION_PACKAGE_REQUIRED',
+        422,
+        'either artifact or packageUri/checksum is required'
+      );
+    }
+
+    if (!hasInlineArtifact) {
+      return {
+        packageUri: input.packageUri!,
+        checksum: input.checksum!,
+        packageSource: 'external' as const
+      };
+    }
+
+    try {
+      const built = buildArtifactPackage(input.artifact?.format ?? 'zip', input.artifact?.entries ?? []);
+      const artifactKey = this.skillArtifactService.generateArtifactKey();
+      const fileName = this.skillArtifactService.buildArtifactFileName(skillKey, input.version, built.packageFormat);
+
+      return {
+        packageUri: this.skillArtifactService.buildPackageUri(artifactKey, fileName),
+        checksum: built.checksum,
+        packageSource: 'internal' as const,
+        internalArtifact: {
+          artifactKey,
+          fileName,
+          built
+        }
+      };
+    } catch (error) {
+      throw new AppException(
+        'SKILL_ARTIFACT_INVALID',
+        422,
+        error instanceof Error ? error.message : 'invalid inline artifact payload'
+      );
+    }
   }
 
   private rethrowKnownDatabaseErrors(error: unknown, mapping: Record<string, AppException>) {

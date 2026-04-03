@@ -1,9 +1,10 @@
-import { Body, Controller, Get, HttpCode, Inject, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Inject, Param, ParseIntPipe, Post, Req } from '@nestjs/common';
 
 import type { RequestWithContext } from '../../common/http.types';
 import { RuntimeService } from './runtime.service';
 import {
   RegisterClientDeviceRequestDto,
+  ReportInstallVerificationRequestDto,
   ReportToolInstancesRequestDto,
   ReportWorkspacesRequestDto
 } from './runtime.types';
@@ -33,6 +34,21 @@ export class RuntimeController {
   @Get('/api/my/installs')
   getMyInstalls(@Req() req: RequestWithContext) {
     return this.runtimeService.getMyInstalls(req.auth);
+  }
+
+  @Get('/api/my/installs/:bindingId')
+  getMyInstallDetail(@Req() req: RequestWithContext, @Param('bindingId', ParseIntPipe) bindingId: number) {
+    return this.runtimeService.getMyInstallDetail(bindingId, req.auth);
+  }
+
+  @Post('/api/my/installs/:bindingId/verify')
+  @HttpCode(200)
+  reportInstallVerification(
+    @Req() req: RequestWithContext,
+    @Param('bindingId', ParseIntPipe) bindingId: number,
+    @Body() body: ReportInstallVerificationRequestDto
+  ) {
+    return this.runtimeService.reportInstallVerification(bindingId, body, req.auth);
   }
 
   @Get('/api/my/tool-instances')

@@ -166,6 +166,41 @@ export class InstallService {
         resolvedTargetPath
       });
 
+      if (input.operationType === 'uninstall' || input.operationType === 'rollback') {
+        const activeBinding = await tx.query<{ id: number }>(
+          `
+            SELECT id
+            FROM local_install_binding
+            WHERE client_device_id = $1
+              AND tool_instance_id = $2
+              AND skill_id = $3
+              AND skill_version_id = $4
+              AND target_scope = $5
+              AND COALESCE(workspace_registry_id, 0) = COALESCE($6, 0)
+              AND resolved_target_path = $7
+              AND state IN ('active', 'drifted')
+            LIMIT 1
+          `,
+          [
+            clientDeviceId,
+            input.toolInstanceId,
+            input.skillId,
+            input.skillVersionId,
+            input.targetScope,
+            prepared.workspaceRegistryId,
+            resolvedTargetPath
+          ]
+        );
+
+        if (activeBinding.rows.length === 0) {
+          throw new AppException(
+            'INSTALL_RECORD_STATUS_CONFLICT',
+            409,
+            `active install binding not found for ${input.operationType}`
+          );
+        }
+      }
+
       const installRecordInsert = await tx.query<{ id: number }>(
         `
           INSERT INTO install_record (
@@ -496,6 +531,7 @@ export class InstallService {
       if (!resolvedTargetPath) {
         throw new AppException('INSTALL_RECORD_STATUS_CONFLICT', 409, 'resolved target path missing');
       }
+      this.assertFinalStatusMatchesOperation(record.operation_type, payload.finalStatus);
       if (this.requiresActiveUsePermission(record.operation_type) && payload.finalStatus === 'success') {
         await this.authorizationService.assertSkillUseAllowed(tx, record.skill_id, record.skill_version_id, actor);
       }
@@ -507,7 +543,29 @@ export class InstallService {
         },
         tx,
         async () => {
-          if (payload.finalStatus === 'success') {
+          if (
+            (payload.finalStatus === 'success' && record.operation_type === 'uninstall') ||
+            (payload.finalStatus === 'rolled_back' && record.operation_type === 'rollback')
+          ) {
+            const removed = await tx.query<{ id: number }>(
+              `
+                UPDATE local_install_binding
+                SET state = 'removed',
+                    removed_at = NOW(),
+                    updated_at = NOW(),
+                    updated_by = $3
+                WHERE client_device_id = $1
+                  AND resolved_target_path = $2
+                  AND state IN ('active', 'drifted')
+                RETURNING id
+              `,
+              [record.source_client_id, resolvedTargetPath, actor.userId]
+            );
+
+            if (removed.rows.length === 0) {
+              throw new AppException('INSTALL_RECORD_STATUS_CONFLICT', 409, 'active install binding not found');
+            }
+          } else if (payload.finalStatus === 'success') {
             await tx.query(
               `
                 UPDATE local_install_binding
@@ -517,7 +575,7 @@ export class InstallService {
                     updated_by = $3
                 WHERE client_device_id = $1
                   AND resolved_target_path = $2
-                  AND state = 'active'
+                  AND state IN ('active', 'drifted')
               `,
               [record.source_client_id, resolvedTargetPath, actor.userId]
             );
@@ -770,6 +828,30 @@ export class InstallService {
 
   private requiresActiveUsePermission(operationType: 'install' | 'upgrade' | 'uninstall' | 'rollback') {
     return operationType === 'install' || operationType === 'upgrade';
+  }
+
+  private assertFinalStatusMatchesOperation(
+    operationType: 'install' | 'upgrade' | 'uninstall' | 'rollback',
+    finalStatus: ReportInstallOperationRequestDto['finalStatus']
+  ) {
+    if (operationType === 'rollback') {
+      if (finalStatus === 'success') {
+        throw new AppException(
+          'INSTALL_RECORD_STATUS_CONFLICT',
+          409,
+          'rollback operations must report rolled_back instead of success'
+        );
+      }
+      return;
+    }
+
+    if (finalStatus === 'rolled_back') {
+      throw new AppException(
+        'INSTALL_RECORD_STATUS_CONFLICT',
+        409,
+        `${operationType} operations cannot report rolled_back`
+      );
+    }
   }
 
   private async loadTicketContext(

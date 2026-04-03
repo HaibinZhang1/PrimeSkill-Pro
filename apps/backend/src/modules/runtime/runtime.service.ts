@@ -5,11 +5,14 @@ import { AppException } from '../../common/app.exception';
 import { DatabaseService } from '../../common/database.service';
 import type { AuthContext } from '../../common/http.types';
 import type {
+  MyInstallDetailDto,
   MyInstallDto,
   MyToolInstanceDto,
   MyWorkspaceDto,
   RegisterClientDeviceRequestDto,
   RegisterClientDeviceResponse,
+  ReportInstallVerificationRequestDto,
+  ReportInstallVerificationResponse,
   ReportToolInstancesRequestDto,
   ReportToolInstancesResponse,
   ReportWorkspacesRequestDto,
@@ -539,6 +542,7 @@ export class RuntimeService {
       resolved_target_path: string;
       install_status: string;
       installed_at: Date;
+      last_verified_at: Date | null;
       state: 'active' | 'removed' | 'drifted';
     }>(
       `
@@ -560,6 +564,7 @@ export class RuntimeService {
           lib.resolved_target_path,
           ir.install_status,
           lib.installed_at,
+          lib.last_verified_at,
           lib.state
         FROM local_install_binding lib
         JOIN install_record ir ON ir.id = lib.install_record_id
@@ -570,7 +575,7 @@ export class RuntimeService {
         LEFT JOIN workspace_registry wr ON wr.id = lib.workspace_registry_id
         WHERE ir.user_id = $1
           AND lib.client_device_id = $2
-          AND lib.state = 'active'
+          AND lib.state IN ('active', 'drifted')
         ORDER BY lib.installed_at DESC, lib.id DESC
       `,
       [actor.userId, clientDeviceId]
@@ -595,9 +600,242 @@ export class RuntimeService {
         resolvedTargetPath: row.resolved_target_path,
         installStatus: row.install_status,
         installedAt: row.installed_at.toISOString(),
+        lastVerifiedAt: row.last_verified_at?.toISOString(),
         state: row.state
       }))
     };
+  }
+
+  async getMyInstallDetail(bindingId: number, auth: AuthContext | undefined): Promise<MyInstallDetailDto> {
+    const actor = this.requireAuth(auth);
+    const clientDeviceId = this.requireClientDevice(actor);
+
+    const result = await this.db.query<{
+      binding_id: number;
+      install_record_id: number;
+      skill_id: number;
+      skill_version_id: number;
+      skill_key: string;
+      skill_name: string;
+      skill_version: string;
+      tool_instance_id: number | null;
+      tool_code: string | null;
+      tool_name: string | null;
+      target_scope: 'global' | 'project';
+      workspace_registry_id: number | null;
+      workspace_name: string | null;
+      workspace_path: string | null;
+      resolved_target_path: string;
+      install_status: string;
+      installed_at: Date;
+      last_verified_at: Date | null;
+      state: 'active' | 'removed' | 'drifted';
+      operation_type: 'install' | 'upgrade' | 'uninstall' | 'rollback';
+      trace_id: string | null;
+      manifest_snapshot_json: {
+        ticketId?: string;
+        package?: { uri?: string };
+        template?: {
+          templateCode?: string;
+          packagingMode?: string;
+          contentManagementMode?: string;
+          targetPathTemplate?: string;
+          filenameTemplate?: string;
+        };
+      } | null;
+    }>(
+      `
+        SELECT
+          lib.id AS binding_id,
+          lib.install_record_id,
+          lib.skill_id,
+          lib.skill_version_id,
+          s.skill_key,
+          s.name AS skill_name,
+          sv.version AS skill_version,
+          lib.tool_instance_id,
+          cat.tool_code,
+          cat.tool_name,
+          lib.target_scope,
+          lib.workspace_registry_id,
+          wr.workspace_name,
+          wr.workspace_path,
+          lib.resolved_target_path,
+          ir.install_status,
+          lib.installed_at,
+          lib.last_verified_at,
+          lib.state,
+          ir.operation_type,
+          ir.trace_id,
+          ir.manifest_snapshot_json
+        FROM local_install_binding lib
+        JOIN install_record ir ON ir.id = lib.install_record_id
+        JOIN skill s ON s.id = lib.skill_id
+        LEFT JOIN skill_version sv ON sv.id = lib.skill_version_id
+        LEFT JOIN tool_instance ti ON ti.id = lib.tool_instance_id
+        LEFT JOIN ai_tool_catalog cat ON cat.id = ti.tool_id
+        LEFT JOIN workspace_registry wr ON wr.id = lib.workspace_registry_id
+        WHERE ir.user_id = $1
+          AND lib.client_device_id = $2
+          AND lib.id = $3
+        LIMIT 1
+      `,
+      [actor.userId, clientDeviceId, bindingId]
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      throw new AppException('INSTALL_RECORD_STATUS_CONFLICT', 404, 'install binding not found');
+    }
+
+    return {
+      bindingId: row.binding_id,
+      installRecordId: row.install_record_id,
+      skillId: row.skill_id,
+      skillVersionId: row.skill_version_id,
+      skillKey: row.skill_key,
+      skillName: row.skill_name,
+      skillVersion: row.skill_version,
+      toolInstanceId: row.tool_instance_id ?? undefined,
+      toolCode: row.tool_code ?? undefined,
+      toolName: row.tool_name ?? undefined,
+      targetScope: row.target_scope,
+      workspaceRegistryId: row.workspace_registry_id ?? undefined,
+      workspaceName: row.workspace_name ?? undefined,
+      workspacePath: row.workspace_path ?? undefined,
+      resolvedTargetPath: row.resolved_target_path,
+      installStatus: row.install_status,
+      installedAt: row.installed_at.toISOString(),
+      lastVerifiedAt: row.last_verified_at?.toISOString(),
+      state: row.state,
+      operationType: row.operation_type,
+      traceId: row.trace_id ?? undefined,
+      manifest: row.manifest_snapshot_json
+        ? {
+            ticketId: row.manifest_snapshot_json.ticketId,
+            templateCode: row.manifest_snapshot_json.template?.templateCode,
+            packagingMode: row.manifest_snapshot_json.template?.packagingMode,
+            contentManagementMode: row.manifest_snapshot_json.template?.contentManagementMode,
+            targetPathTemplate: row.manifest_snapshot_json.template?.targetPathTemplate,
+            filenameTemplate: row.manifest_snapshot_json.template?.filenameTemplate,
+            packageUri: row.manifest_snapshot_json.package?.uri
+          }
+        : undefined
+    };
+  }
+
+  async reportInstallVerification(
+    bindingId: number,
+    input: ReportInstallVerificationRequestDto,
+    auth: AuthContext | undefined
+  ): Promise<ReportInstallVerificationResponse> {
+    const actor = this.requireAuth(auth);
+    const clientDeviceId = this.requireClientDevice(actor);
+
+    return this.db.withTransaction(async (tx) => {
+      const bindingResult = await tx.query<{
+        id: number;
+        install_record_id: number;
+        skill_id: number;
+        skill_version_id: number | null;
+        tool_instance_id: number | null;
+        workspace_registry_id: number | null;
+        resolved_target_path: string;
+        state: 'active' | 'removed' | 'drifted';
+      }>(
+        `
+          SELECT
+            lib.id,
+            lib.install_record_id,
+            lib.skill_id,
+            lib.skill_version_id,
+            lib.tool_instance_id,
+            lib.workspace_registry_id,
+            lib.resolved_target_path,
+            lib.state
+          FROM local_install_binding lib
+          JOIN install_record ir ON ir.id = lib.install_record_id
+          WHERE lib.id = $1
+            AND lib.client_device_id = $2
+            AND ir.user_id = $3
+          LIMIT 1
+          FOR UPDATE
+        `,
+        [bindingId, clientDeviceId, actor.userId]
+      );
+
+      const binding = bindingResult.rows[0];
+      if (!binding) {
+        throw new AppException('INSTALL_RECORD_STATUS_CONFLICT', 404, 'install binding not found');
+      }
+      if (binding.state === 'removed') {
+        throw new AppException('INSTALL_RECORD_STATUS_CONFLICT', 409, 'removed install binding cannot be verified');
+      }
+      if (input.resolvedTargetPath && input.resolvedTargetPath !== binding.resolved_target_path) {
+        throw new AppException('INSTALL_RECORD_STATUS_CONFLICT', 409, 'resolved target path mismatch');
+      }
+
+      const nextState = input.verificationStatus === 'verified' ? 'active' : 'drifted';
+      const updateResult = await tx.query<{ last_verified_at: Date }>(
+        `
+          UPDATE local_install_binding
+          SET state = $2,
+              last_verified_at = NOW(),
+              updated_at = NOW(),
+              updated_by = $3
+          WHERE id = $1
+          RETURNING last_verified_at
+        `,
+        [bindingId, nextState, actor.userId]
+      );
+
+      await tx.query(
+        `
+          INSERT INTO skill_usage_event (
+            user_id,
+            client_device_id,
+            skill_id,
+            skill_version_id,
+            tool_instance_id,
+            workspace_registry_id,
+            event_type,
+            event_source,
+            event_time,
+            dedupe_key,
+            payload_json,
+            trace_id,
+            created_by
+          )
+          VALUES (
+            $1, $2, $3, $4, $5, $6,
+            'verify', 'native_core', NOW(), $7, $8::jsonb, $9, $1
+          )
+        `,
+        [
+          actor.userId,
+          clientDeviceId,
+          binding.skill_id,
+          binding.skill_version_id,
+          binding.tool_instance_id,
+          binding.workspace_registry_id,
+          `verify:${bindingId}:${input.traceId}`,
+          JSON.stringify({
+            verificationStatus: input.verificationStatus,
+            resolvedTargetPath: input.resolvedTargetPath ?? binding.resolved_target_path,
+            driftReasons: input.driftReasons ?? [],
+            payload: input.payload ?? {}
+          }),
+          input.traceId
+        ]
+      );
+
+      return {
+        bindingId,
+        installRecordId: binding.install_record_id,
+        state: nextState,
+        lastVerifiedAt: updateResult.rows[0].last_verified_at.toISOString()
+      };
+    });
   }
 
   private requireAuth(auth: AuthContext | undefined): AuthContext {

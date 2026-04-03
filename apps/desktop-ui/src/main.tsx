@@ -5,11 +5,13 @@ import ReactDOM from 'react-dom/client';
 
 import {
   createInstallTicket,
+  getMyInstallDetail,
   listMyInstalls,
   listMyToolInstances,
   listMyWorkspaces,
   loadBackendHealth,
   registerClientDevice,
+  reportInstallVerification,
   reportToolInstances,
   reportWorkspaces,
   resolveApiBaseUrl,
@@ -19,22 +21,30 @@ import {
   type InstallTicketPayload,
   type MarketplaceSearchResponse,
   type MarketplaceSkill,
+  type MyInstallDetail,
   type MyInstall,
   type MyToolInstance,
-  type MyWorkspace
+  type MyWorkspace,
+  type ReportInstallVerificationResponse
 } from './api-client';
 import { commandNamespace } from './ipc-client';
 import {
   applyInstallTicketNative,
+  getInstallationDetailNative,
   hasTauriRuntime,
   listenInstallProgressNative,
   listToolInstancesNative,
   loadNativeBootstrapStatus,
   previewInstallTargetNative,
+  rollbackInstallationNative,
   selectWorkspaceNative,
   tauriRuntimeLabel,
+  uninstallInstallationNative,
+  verifyInstallationNative,
   type NativeApplyInstallTicketResult,
   type NativeBootstrapStatus,
+  type NativeInstallationDetail,
+  type NativeInstallationVerification,
   type NativePreviewInstallTarget
 } from './tauri-client';
 
@@ -49,9 +59,42 @@ function formatConfidence(score: number) {
   return `${Math.round(score * 100)}%`;
 }
 
+function scopeLabel(scope: string) {
+  return scope === 'project' ? '项目级' : scope === 'global' ? '全局' : scope;
+}
+
+function installStatusLabel(status: string) {
+  switch (status) {
+    case 'idle':
+      return '待开始';
+    case 'ticket_issued':
+      return '已签发安装票据';
+    case 'downloading':
+      return '下载中';
+    case 'staging':
+      return '准备写入';
+    case 'verifying':
+      return '校验中';
+    case 'committing':
+      return '提交中';
+    case 'success':
+      return '成功';
+    case 'failed':
+      return '失败';
+    case 'rolled_back':
+      return '已回滚';
+    case 'drifted':
+      return '已漂移';
+    case 'verified':
+      return '校验通过';
+    default:
+      return status;
+  }
+}
+
 function formatDateTime(value?: string) {
   if (!value) {
-    return 'n/a';
+    return '暂无';
   }
 
   const date = new Date(value);
@@ -67,7 +110,7 @@ function SkillCard({ skill, onClick }: { skill: MarketplaceSkill; onClick?: (ski
     <article className="skill-card" onClick={() => onClick?.(skill)} style={{ cursor: onClick ? 'pointer' : 'default' }}>
       <div className="skill-card__meta">
         <span className="eyebrow">{skill.category}</span>
-        <span className="pill pill--muted">{formatConfidence(skill.confidenceScore)} match</span>
+        <span className="pill pill--muted">匹配度 {formatConfidence(skill.confidenceScore)}</span>
       </div>
       <h3>{skill.name}</h3>
       <p className="skill-card__summary">{skill.summary}</p>
@@ -82,11 +125,11 @@ function SkillCard({ skill, onClick }: { skill: MarketplaceSkill; onClick?: (ski
       <div className="skill-card__footer">
         <div>
           <strong>{skill.installCount}</strong>
-          <span> installs</span>
+          <span> 次安装</span>
         </div>
         <div>
-          <strong>{skill.recommendedInstallMode}</strong>
-          <span> scope</span>
+          <strong>{scopeLabel(skill.recommendedInstallMode)}</strong>
+          <span> 范围</span>
         </div>
       </div>
       <div className="tool-row">
@@ -116,40 +159,54 @@ function LoadingCards() {
   );
 }
 
-function InstalledSection({ installs }: { installs: MyInstall[] }) {
+function InstalledSection({
+  installs,
+  onViewInstall
+}: {
+  installs: MyInstall[];
+  onViewInstall: (install: MyInstall) => void;
+}) {
   return (
     <section className="results-section" id="installs">
       <div className="results-section__header">
         <div>
-          <span className="eyebrow">My installs</span>
-          <h2>Installed on this desktop</h2>
+          <span className="eyebrow">我的安装</span>
+          <h2>当前桌面已安装</h2>
         </div>
-        <p>Data comes from `GET /api/my/installs`, backed by `local_install_binding` for the current device.</p>
+        <p>数据来自当前设备的 `GET /api/my/installs` 与 `local_install_binding`。</p>
       </div>
 
       {installs.length === 0 ? (
         <div className="feedback-card">
-          <strong>No installed skills yet.</strong>
-          <p>Run the install wizard from any supported Cursor or OpenCode skill card to materialize the first local binding.</p>
+          <strong>还没有已安装 Skill。</strong>
+          <p>从支持的 Cursor 或 OpenCode Skill 卡片进入安装向导，即可创建第一条本地安装绑定。</p>
         </div>
       ) : (
         <div className="installed-grid">
           {installs.map((install) => (
             <article key={install.bindingId} className="installed-card">
               <div className="skill-card__meta">
-                <span className="eyebrow">{install.toolName ?? install.toolCode ?? 'tool'}</span>
-                <span className="pill pill--good">{install.installStatus}</span>
+                <span className="eyebrow">{install.toolName ?? install.toolCode ?? '工具'}</span>
+                <span className={`pill ${install.state === 'drifted' ? 'pill--warn' : 'pill--good'}`}>
+                  {install.state === 'drifted' ? '已漂移' : installStatusLabel(install.installStatus)}
+                </span>
               </div>
               <h3>{install.skillName}</h3>
               <p className="skill-card__summary">{install.skillKey}</p>
               <div className="installed-card__facts">
-                <span>{install.targetScope}</span>
-                <span>{install.workspaceName ?? install.workspacePath ?? 'workspace n/a'}</span>
+                <span>{scopeLabel(install.targetScope)}</span>
+                <span>{install.workspaceName ?? install.workspacePath ?? '暂无工作区'}</span>
               </div>
               <p className="skill-card__reason">{install.resolvedTargetPath}</p>
               <div className="installed-card__meta">
                 <span>v{install.skillVersion}</span>
                 <span>{formatDateTime(install.installedAt)}</span>
+                <span>最近校验 {formatDateTime(install.lastVerifiedAt)}</span>
+              </div>
+              <div className="wizard-actions">
+                <button type="button" className="button button--secondary" onClick={() => onViewInstall(install)}>
+                  查看详情
+                </button>
               </div>
             </article>
           ))}
@@ -188,49 +245,49 @@ function StatusPanel({
   return (
     <aside className="status-panel">
       <div className="status-panel__header">
-        <span className="eyebrow">Environment</span>
-        <h2>Local stack status</h2>
+        <span className="eyebrow">运行环境</span>
+        <h2>本地链路状态</h2>
       </div>
       <div className="status-grid">
         <div className="status-card">
           <span className={`pill ${nativeReady ? 'pill--good' : 'pill--warn'}`}>
-            {statusLabel(nativeReady, 'Native ready', 'Native fallback')}
+            {statusLabel(nativeReady, 'Native 已就绪', 'Native 降级模式')}
           </span>
           <strong>{tauriRuntimeLabel()}</strong>
-          <p>{nativeReady ? nativeStatus?.sampleTargetPath : nativeError ?? 'Running in browser preview mode.'}</p>
+          <p>{nativeReady ? nativeStatus?.sampleTargetPath : nativeError ?? '当前运行在浏览器预览模式。'}</p>
         </div>
         <div className="status-card">
           <span className={`pill ${backendReady ? 'pill--good' : 'pill--warn'}`}>
-            {statusLabel(backendReady, 'Backend ready', 'Backend unreachable')}
+            {statusLabel(backendReady, 'Backend 已就绪', 'Backend 不可达')}
           </span>
           <strong>{resolveApiBaseUrl()}</strong>
-          <p>{backendReady ? `Service: ${backendHealth?.service}` : backendError ?? 'Waiting for backend health.'}</p>
+          <p>{backendReady ? `服务：${backendHealth?.service}` : backendError ?? '等待后端健康检查结果。'}</p>
         </div>
         <div className="status-card">
           <span className={`pill ${runtimeSyncState === 'ready' ? 'pill--good' : 'pill--muted'}`}>
-            Runtime sync
+            运行时同步
           </span>
-          <strong>{runtimeSyncState}</strong>
+          <strong>{installStatusLabel(runtimeSyncState)}</strong>
           <p>
             {runtimeSyncError
               ? runtimeSyncError
-              : `${toolCount} tools, ${workspaceCount} workspaces, ${installCount} installs are now flowing through backend APIs.`}
+              : `已通过后端 API 同步 ${toolCount} 个工具、${workspaceCount} 个工作区、${installCount} 条安装记录。`}
           </p>
         </div>
         <div className="status-card">
-          <span className="pill pill--muted">Marketplace feed</span>
-          <strong>{marketplace ? marketplace.source : 'pending'}</strong>
+          <span className="pill pill--muted">市场数据源</span>
+          <strong>{marketplace ? (marketplace.source === 'database' ? '数据库' : '演示目录') : '等待中'}</strong>
           <p>
             {marketplace
               ? marketplace.source === 'database'
-                ? 'Search is reading live backend catalog data.'
-                : 'Search is using the built-in demo catalog because the database is still empty.'
-              : 'Fetching marketplace cards from backend.'}
+                ? '搜索结果正在读取真实后端目录数据。'
+                : '数据库仍为空，当前使用内置演示目录返回搜索结果。'
+              : '正在从后端拉取市场卡片数据。'}
           </p>
         </div>
       </div>
       <div className="status-footer">
-        <span>IPC namespace: {commandNamespace()}</span>
+        <span>IPC 命名空间：{commandNamespace()}</span>
       </div>
     </aside>
   );
@@ -290,7 +347,7 @@ function SkillDetailDrawer({
 
   const runPreview = async () => {
     if (!selectedTool || !selectedWorkspace) {
-      throw new Error('Select a verified tool instance and workspace first');
+      throw new Error('请先选择已验证的工具实例和工作区');
     }
 
     setIsPreviewing(true);
@@ -311,7 +368,7 @@ function SkillDetailDrawer({
 
   const handleCreateTicket = async () => {
     if (!selectedTool || !selectedWorkspace) {
-      setError('A verified tool instance and workspace are required');
+      setError('必须先选择已验证的工具实例和工作区');
       return;
     }
 
@@ -336,7 +393,7 @@ function SkillDetailDrawer({
       setTicketResult(result);
       setCurrentStage('ticket_issued');
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to create install ticket');
+      setError(e instanceof Error ? e.message : '创建安装票据失败');
     } finally {
       setIsCreatingTicket(false);
     }
@@ -344,11 +401,11 @@ function SkillDetailDrawer({
 
   const handleApplyTicket = async () => {
     if (!ticketResult) {
-      setError('Create an install ticket first');
+      setError('请先创建安装票据');
       return;
     }
     if (!deviceToken) {
-      setError('Device registration is required before applying an install ticket');
+      setError('应用安装票据前需要先完成设备注册');
       return;
     }
 
@@ -374,7 +431,7 @@ function SkillDetailDrawer({
       setCurrentStage(result.finalStatus);
       await onInstallCompleted();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to apply install ticket');
+      setError(e instanceof Error ? e.message : 'Native Core 应用安装票据失败');
       setCurrentStage('failed');
     } finally {
       unlisten();
@@ -389,7 +446,7 @@ function SkillDetailDrawer({
         setWorkspaceRegistryId(created.workspaceRegistryId);
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to register workspace');
+      setError(e instanceof Error ? e.message : '登记工作区失败');
     }
   };
 
@@ -398,7 +455,7 @@ function SkillDetailDrawer({
       <aside className="drawer" onClick={(event) => event.stopPropagation()}>
         <header className="drawer__header">
           <h2>{skill.name}</h2>
-          <button type="button" className="drawer__close" onClick={onClose} aria-label="Close details">
+          <button type="button" className="drawer__close" onClick={onClose} aria-label="关闭详情">
             &times;
           </button>
         </header>
@@ -406,7 +463,7 @@ function SkillDetailDrawer({
         <div className="drawer__content">
           <div className="skill-card__meta">
             <span className="eyebrow">{skill.category}</span>
-            <span className="pill pill--muted">{formatConfidence(skill.confidenceScore)} match</span>
+            <span className="pill pill--muted">匹配度 {formatConfidence(skill.confidenceScore)}</span>
           </div>
           <p className="skill-card__summary">{skill.summary}</p>
           <p className="skill-card__reason">{skill.whyMatched}</p>
@@ -414,16 +471,16 @@ function SkillDetailDrawer({
           <div className="wizard-card">
             <div className="wizard-card__header">
               <div>
-                <span className="eyebrow">Project install wizard</span>
-                <h3>Verified path only</h3>
+                <span className="eyebrow">项目安装向导</span>
+                <h3>仅限已验证路径</h3>
               </div>
-              <span className="pill pill--good">{targetScope}</span>
+              <span className="pill pill--good">{scopeLabel(targetScope)}</span>
             </div>
 
             <div className="install-form__field">
-              <label>Verified tool instance</label>
+              <label>已验证工具实例</label>
               <select value={toolInstanceId} onChange={(event) => setToolInstanceId(Number(event.target.value))}>
-                {supportedTools.length === 0 ? <option value={0}>No supported verified tools discovered</option> : null}
+                {supportedTools.length === 0 ? <option value={0}>未发现可用的已验证工具</option> : null}
                 {supportedTools.map((item) => (
                   <option key={item.toolInstanceId} value={item.toolInstanceId}>
                     {item.toolName} {item.toolVersion ? `(${item.toolVersion})` : ''} - {item.toolCode}
@@ -433,12 +490,12 @@ function SkillDetailDrawer({
             </div>
 
             <div className="install-form__field">
-              <label>Workspace</label>
+              <label>工作区</label>
               <select
                 value={workspaceRegistryId}
                 onChange={(event) => setWorkspaceRegistryId(Number(event.target.value))}
               >
-                {workspaces.length === 0 ? <option value={0}>No workspace registered yet</option> : null}
+                {workspaces.length === 0 ? <option value={0}>还没有已登记工作区</option> : null}
                 {workspaces.map((item) => (
                   <option key={item.workspaceRegistryId} value={item.workspaceRegistryId}>
                     {item.workspaceName ?? item.workspacePath}
@@ -446,25 +503,25 @@ function SkillDetailDrawer({
                 ))}
               </select>
               <button type="button" className="button button--secondary" onClick={handleAddWorkspace}>
-                Select workspace via Tauri
+                通过 Tauri 选择工作区
               </button>
             </div>
 
             <div className="wizard-actions">
               <button type="button" className="button button--secondary" onClick={() => void runPreview()} disabled={isPreviewing}>
-                {isPreviewing ? 'Previewing...' : 'Preview target'}
+                {isPreviewing ? '预览中...' : '预览目标路径'}
               </button>
               <button type="button" className="button button--secondary" onClick={() => void handleCreateTicket()} disabled={isCreatingTicket || supportedTools.length === 0}>
-                {isCreatingTicket ? 'Creating...' : 'Create install ticket'}
+                {isCreatingTicket ? '创建中...' : '创建安装票据'}
               </button>
               <button type="button" className="button" onClick={() => void handleApplyTicket()} disabled={isApplying || !ticketResult}>
-                {isApplying ? 'Applying...' : 'Apply in native core'}
+                {isApplying ? '应用中...' : '在 Native Core 中安装'}
               </button>
             </div>
 
             {preview ? (
               <div className="wizard-output">
-                <strong>Preview</strong>
+                <strong>目标预览</strong>
                 <p>{preview.templateCode}</p>
                 <p>{preview.resolvedTargetPath}</p>
               </div>
@@ -472,22 +529,22 @@ function SkillDetailDrawer({
 
             {ticketResult ? (
               <div className="wizard-output">
-                <strong>Install ticket</strong>
+                <strong>安装票据</strong>
                 <p>{ticketResult.ticketId}</p>
-                <p>record #{ticketResult.installRecordId}</p>
-                <p>expires {formatDateTime(ticketResult.expiresAt)}</p>
+                <p>记录 #{ticketResult.installRecordId}</p>
+                <p>过期时间 {formatDateTime(ticketResult.expiresAt)}</p>
               </div>
             ) : null}
 
             <div className="wizard-output">
-              <strong>Current stage</strong>
-              <p>{currentStage}</p>
+              <strong>当前阶段</strong>
+              <p>{installStatusLabel(currentStage)}</p>
             </div>
 
             {applyResult ? (
               <div className="wizard-output wizard-output--success">
-                <strong>Final result</strong>
-                <p>{applyResult.finalStatus}</p>
+                <strong>最终结果</strong>
+                <p>{installStatusLabel(applyResult.finalStatus)}</p>
                 <p>{applyResult.resolvedTargetPath}</p>
                 <p>{applyResult.localRegistryPath}</p>
               </div>
@@ -495,7 +552,7 @@ function SkillDetailDrawer({
 
             {error ? (
               <div className="feedback-card feedback-card--error">
-                <strong>Install flow failed</strong>
+                <strong>安装流程失败</strong>
                 <p>{error}</p>
               </div>
             ) : null}
@@ -504,7 +561,342 @@ function SkillDetailDrawer({
 
         <footer className="drawer__footer">
           <button type="button" className="button button--secondary" onClick={onClose}>
-            Close
+            关闭
+          </button>
+        </footer>
+      </aside>
+    </div>
+  );
+}
+
+function InstallDetailDrawer({
+  install,
+  detail,
+  localDetail,
+  loading,
+  loadError,
+  deviceToken,
+  onInstallChanged,
+  onClose
+}: {
+  install: MyInstall;
+  detail: MyInstallDetail | null;
+  localDetail: NativeInstallationDetail | null;
+  loading: boolean;
+  loadError: string | null;
+  deviceToken: string | null;
+  onInstallChanged: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [ticketResult, setTicketResult] = useState<InstallTicketPayload | null>(null);
+  const [applyResult, setApplyResult] = useState<NativeApplyInstallTicketResult | null>(null);
+  const [verificationResult, setVerificationResult] = useState<NativeInstallationVerification | null>(null);
+  const [verificationReport, setVerificationReport] = useState<ReportInstallVerificationResponse | null>(null);
+  const [currentStage, setCurrentStage] = useState<string>('idle');
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [isUninstalling, setIsUninstalling] = useState(false);
+  const [isRollingBack, setIsRollingBack] = useState(false);
+  const [activeActionLabel, setActiveActionLabel] = useState<'卸载' | '回滚' | '校验'>('卸载');
+  const [error, setError] = useState<string | null>(null);
+  const effectiveBindingState = verificationReport?.state ?? detail?.state ?? install.state;
+  const effectiveLastVerifiedAt = verificationReport?.lastVerifiedAt ?? detail?.lastVerifiedAt;
+
+  const handleRemoval = async (operationType: 'uninstall' | 'rollback') => {
+    if (!detail) {
+      setError('安装详情仍在加载中');
+      return;
+    }
+    if (!detail.toolInstanceId) {
+      setError(`${operationType === 'rollback' ? '回滚' : '卸载'}前需要已验证的工具实例`);
+      return;
+    }
+    if (!deviceToken) {
+      setError(`${operationType === 'rollback' ? '回滚' : '卸载'}前需要先完成设备注册`);
+      return;
+    }
+
+    const actionLabel = operationType === 'rollback' ? '回滚' : '卸载';
+    setActiveActionLabel(actionLabel);
+    if (operationType === 'rollback') {
+      setIsRollingBack(true);
+    } else {
+      setIsUninstalling(true);
+    }
+    setError(null);
+    setApplyResult(null);
+    setVerificationResult(null);
+    setVerificationReport(null);
+
+    try {
+      const ticket = await createInstallTicket({
+        skillId: detail.skillId,
+        skillVersionId: detail.skillVersionId,
+        operationType,
+        targetScope: detail.targetScope,
+        toolInstanceId: detail.toolInstanceId,
+        workspaceRegistryId: detail.workspaceRegistryId,
+        idempotencyKey: `idem_${operationType}_${detail.installRecordId}_${Date.now()}`
+      });
+      setTicketResult(ticket);
+      setCurrentStage('ticket_issued');
+
+      const unlisten = await listenInstallProgressNative((event) => {
+        if (event.ticketId === ticket.ticketId) {
+          setCurrentStage(event.stage);
+        }
+      });
+
+      try {
+        const nativeAction =
+          operationType === 'rollback' ? rollbackInstallationNative : uninstallInstallationNative;
+        const result = await nativeAction({
+          apiBaseUrl: resolveApiBaseUrl(),
+          authToken: resolveDesktopAuthToken(),
+          deviceToken,
+          ticketId: ticket.ticketId,
+          traceId: `trace_${operationType}_${ticket.installRecordId}_${Date.now()}`
+        });
+        setApplyResult(result);
+        setCurrentStage(result.finalStatus);
+        await onInstallChanged();
+        onClose();
+      } finally {
+        unlisten();
+      }
+    } catch (e: unknown) {
+      setError(
+        e instanceof Error ? e.message : `${operationType === 'rollback' ? '回滚' : '卸载'}安装失败`
+      );
+      setCurrentStage('failed');
+    } finally {
+      if (operationType === 'rollback') {
+        setIsRollingBack(false);
+      } else {
+        setIsUninstalling(false);
+      }
+    }
+  };
+
+  const handleUninstall = async () => handleRemoval('uninstall');
+  const handleRollback = async () => handleRemoval('rollback');
+
+  const handleVerify = async () => {
+    if (!detail) {
+      setError('安装详情仍在加载中');
+      return;
+    }
+
+    setActiveActionLabel('校验');
+    setIsVerifying(true);
+    setError(null);
+    setTicketResult(null);
+    setApplyResult(null);
+    setVerificationResult(null);
+    setVerificationReport(null);
+    setCurrentStage('verifying');
+
+    try {
+      const nativeResult = await verifyInstallationNative(detail.installRecordId);
+      setVerificationResult(nativeResult);
+
+      const report = await reportInstallVerification(detail.bindingId, {
+        verificationStatus: nativeResult.verificationStatus,
+        resolvedTargetPath: nativeResult.resolvedTargetPath,
+        driftReasons: nativeResult.driftReasons,
+        payload: {
+          verifiedAt: nativeResult.verifiedAt,
+          files: nativeResult.files
+        },
+        traceId: `trace_verify_${detail.installRecordId}_${Date.now()}`
+      });
+      setVerificationReport(report);
+      setCurrentStage(nativeResult.verificationStatus);
+      await onInstallChanged();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '校验安装结果失败');
+      setCurrentStage('failed');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  return (
+    <div className="drawer-overlay" onClick={onClose}>
+      <aside className="drawer" onClick={(event) => event.stopPropagation()}>
+        <header className="drawer__header">
+          <div>
+            <h2>{install.skillName}</h2>
+            <p className="skill-card__reason">{install.resolvedTargetPath}</p>
+          </div>
+          <button type="button" className="drawer__close" onClick={onClose} aria-label="关闭安装详情">
+            &times;
+          </button>
+        </header>
+
+        <div className="drawer__content">
+          {loading ? (
+            <div className="feedback-card">
+              <strong>正在加载安装详情...</strong>
+            </div>
+          ) : null}
+
+          {loadError ? (
+            <div className="feedback-card feedback-card--error">
+              <strong>加载详情失败</strong>
+              <p>{loadError}</p>
+            </div>
+          ) : null}
+
+          {detail ? (
+            <div className="wizard-card">
+              <div className="wizard-card__header">
+                <div>
+                  <span className="eyebrow">后端详情</span>
+                  <h3>{detail.skillKey}</h3>
+                </div>
+                <span className={`pill ${effectiveBindingState === 'drifted' ? 'pill--warn' : 'pill--good'}`}>
+                  {installStatusLabel(effectiveBindingState)}
+                </span>
+              </div>
+              <div className="wizard-output">
+                <p>绑定 #{detail.bindingId}</p>
+                <p>{detail.toolName ?? detail.toolCode ?? '暂无工具信息'}</p>
+                <p>{detail.workspaceName ?? detail.workspacePath ?? '暂无工作区'}</p>
+                <p>{detail.operationType === 'rollback' ? '回滚' : detail.operationType === 'uninstall' ? '卸载' : '安装'}</p>
+                <p>安装状态 {installStatusLabel(detail.installStatus)}</p>
+                <p>{detail.manifest?.templateCode ?? '暂无模板信息'}</p>
+                <p>{detail.manifest?.contentManagementMode ?? '暂无内容写入模式'}</p>
+                <p>最近校验 {formatDateTime(effectiveLastVerifiedAt)}</p>
+              </div>
+            </div>
+          ) : null}
+
+          {localDetail ? (
+            <div className="wizard-card">
+              <div className="wizard-card__header">
+                <div>
+                  <span className="eyebrow">本地注册表</span>
+                  <h3>{localDetail.install.fileCount} 个受管文件</h3>
+                </div>
+                <span className="pill pill--muted">{installStatusLabel(localDetail.install.finalStatus)}</span>
+              </div>
+              <div className="wizard-output">
+                <p>{localDetail.install.targetRootPath}</p>
+                <p>{localDetail.install.packageUri}</p>
+                <p>{localDetail.install.contentManagementMode}</p>
+              </div>
+              {localDetail.files.map((file) => (
+                <div key={file.filePath} className="wizard-output">
+                  <strong>{file.relativePath}</strong>
+                  <p>{file.filePath}</p>
+                  <p>{file.contentManagementMode}</p>
+                  <p>{file.existedBefore ? '卸载或回滚时会恢复原内容' : '该文件由本次安装创建'}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {verificationResult ? (
+            <div
+              className={`wizard-card ${
+                verificationResult.verificationStatus === 'verified' ? 'wizard-output--success' : ''
+              }`}
+            >
+              <div className="wizard-card__header">
+                <div>
+                  <span className="eyebrow">校验结果</span>
+                  <h3>{installStatusLabel(verificationResult.verificationStatus)}</h3>
+                </div>
+                <span
+                  className={`pill ${
+                    verificationResult.verificationStatus === 'verified' ? 'pill--good' : 'pill--warn'
+                  }`}
+                >
+                  {installStatusLabel(verificationResult.verificationStatus)}
+                </span>
+              </div>
+              <div className="wizard-output">
+                <p>{verificationResult.resolvedTargetPath}</p>
+                <p>校验时间 {formatDateTime(verificationReport?.lastVerifiedAt ?? verificationResult.verifiedAt)}</p>
+                <p>
+                  {verificationResult.driftReasons.length > 0
+                    ? verificationResult.driftReasons.join(', ')
+                    : '全部受管文件均通过本地校验'}
+                </p>
+              </div>
+              {verificationResult.files.map((file) => (
+                <div key={file.filePath} className="wizard-output">
+                  <strong>{file.relativePath}</strong>
+                  <p>{installStatusLabel(file.status)}</p>
+                  <p>{file.exists ? file.currentSha256 ?? '哈希不可用' : '磁盘上缺失'}</p>
+                  <p>
+                    {file.managedBlockPresent === undefined
+                      ? file.hashMatches
+                        ? '内容哈希与注册表一致'
+                        : '内容哈希已漂移'
+                      : file.managedBlockPresent
+                        ? '受管块标记存在'
+                        : '受管块标记缺失'}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {ticketResult ? (
+            <div className="wizard-output">
+              <strong>{activeActionLabel}票据</strong>
+              <p>{ticketResult.ticketId}</p>
+              <p>记录 #{ticketResult.installRecordId}</p>
+              <p>过期时间 {formatDateTime(ticketResult.expiresAt)}</p>
+            </div>
+          ) : null}
+
+          <div className="wizard-output">
+            <strong>当前阶段</strong>
+            <p>{installStatusLabel(currentStage)}</p>
+          </div>
+
+          {applyResult ? (
+            <div className="wizard-output wizard-output--success">
+              <strong>最终结果</strong>
+              <p>{installStatusLabel(applyResult.finalStatus)}</p>
+              <p>{applyResult.resolvedTargetPath}</p>
+            </div>
+          ) : null}
+
+          {error ? (
+            <div className="feedback-card feedback-card--error">
+              <strong>{activeActionLabel}失败</strong>
+              <p>{error}</p>
+            </div>
+          ) : null}
+        </div>
+
+        <footer className="drawer__footer">
+          <button
+            type="button"
+            className="button button--secondary"
+            onClick={() => void handleVerify()}
+            disabled={isVerifying || isUninstalling || isRollingBack || loading || !!loadError}
+          >
+            {isVerifying ? '校验中...' : '校验'}
+          </button>
+          <button
+            type="button"
+            className="button"
+            onClick={() => void handleUninstall()}
+            disabled={isVerifying || isUninstalling || isRollingBack || loading || !!loadError}
+          >
+            {isUninstalling ? '卸载中...' : '卸载'}
+          </button>
+          <button
+            type="button"
+            className="button button--secondary"
+            onClick={() => void handleRollback()}
+            disabled={isVerifying || isUninstalling || isRollingBack || loading || !!loadError}
+          >
+            {isRollingBack ? '回滚中...' : '回滚'}
           </button>
         </footer>
       </aside>
@@ -524,6 +916,11 @@ function DesktopApp() {
   const [backendHealth, setBackendHealth] = useState<BackendHealth | null>(null);
   const [backendError, setBackendError] = useState<string | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<MarketplaceSkill | null>(null);
+  const [selectedInstall, setSelectedInstall] = useState<MyInstall | null>(null);
+  const [selectedInstallDetail, setSelectedInstallDetail] = useState<MyInstallDetail | null>(null);
+  const [selectedLocalInstallDetail, setSelectedLocalInstallDetail] = useState<NativeInstallationDetail | null>(null);
+  const [loadingInstallDetail, setLoadingInstallDetail] = useState(false);
+  const [installDetailError, setInstallDetailError] = useState<string | null>(null);
   const [toolInstances, setToolInstances] = useState<MyToolInstance[]>([]);
   const [workspaces, setWorkspaces] = useState<MyWorkspace[]>([]);
   const [installs, setInstalls] = useState<MyInstall[]>([]);
@@ -546,7 +943,7 @@ function DesktopApp() {
   const syncRuntimeData = async () => {
     if (!hasTauriRuntime()) {
       setRuntimeSyncState('fallback');
-      setRuntimeSyncError('Tauri runtime unavailable, native install commands are disabled in browser preview.');
+      setRuntimeSyncError('Tauri 运行时不可用，浏览器预览模式下无法使用本地安装命令。');
       return;
     }
 
@@ -582,7 +979,7 @@ function DesktopApp() {
       setRuntimeSyncState('ready');
     } catch (error: unknown) {
       setRuntimeSyncState('failed');
-      setRuntimeSyncError(error instanceof Error ? error.message : 'Unknown runtime sync error');
+      setRuntimeSyncError(error instanceof Error ? error.message : '运行时同步失败，错误原因未知');
     }
   };
 
@@ -624,7 +1021,7 @@ function DesktopApp() {
           return;
         }
         setNativeStatus(null);
-        setNativeError(error instanceof Error ? error.message : 'unknown native error');
+        setNativeError(error instanceof Error ? error.message : 'Native 层返回了未知错误');
       });
 
     return () => {
@@ -648,7 +1045,7 @@ function DesktopApp() {
           return;
         }
         setBackendHealth(null);
-        setBackendError(error instanceof Error ? error.message : 'unknown backend error');
+        setBackendError(error instanceof Error ? error.message : 'Backend 返回了未知错误');
       });
 
     return () => {
@@ -684,7 +1081,7 @@ function DesktopApp() {
           }
           startTransition(() => {
             setMarketplace(null);
-            setMarketplaceError(error instanceof Error ? error.message : 'unknown marketplace error');
+            setMarketplaceError(error instanceof Error ? error.message : '市场请求失败，错误原因未知');
           });
         })
         .finally(() => {
@@ -701,11 +1098,55 @@ function DesktopApp() {
     };
   }, [query, activeTools, reloadNonce]);
 
-  const sectionTitle = marketplace?.mode === 'search' && query.trim() ? 'Search results' : 'Recommended skills';
+  useEffect(() => {
+    if (!selectedInstall) {
+      setSelectedInstallDetail(null);
+      setSelectedLocalInstallDetail(null);
+      setInstallDetailError(null);
+      setLoadingInstallDetail(false);
+      return;
+    }
+
+    let active = true;
+    setLoadingInstallDetail(true);
+    setInstallDetailError(null);
+
+    Promise.all([
+      getMyInstallDetail(selectedInstall.bindingId),
+      hasTauriRuntime() ? getInstallationDetailNative(selectedInstall.installRecordId) : Promise.resolve(null)
+    ])
+      .then(([detail, localDetail]) => {
+        if (!active) {
+          return;
+        }
+        setSelectedInstallDetail(detail);
+        setSelectedLocalInstallDetail(localDetail);
+      })
+      .catch((error: unknown) => {
+        if (!active) {
+          return;
+        }
+        setSelectedInstallDetail(null);
+        setSelectedLocalInstallDetail(null);
+        setInstallDetailError(error instanceof Error ? error.message : '安装详情加载失败，错误原因未知');
+      })
+      .finally(() => {
+        if (!active) {
+          return;
+        }
+        setLoadingInstallDetail(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedInstall]);
+
+  const sectionTitle = marketplace?.mode === 'search' && query.trim() ? '搜索结果' : '推荐技能';
   const sectionDescription =
     marketplace?.source === 'demo_catalog'
-      ? 'Live backend request succeeded. The backend is returning a curated demo catalog until the database is populated.'
-      : 'Showing the current backend marketplace feed for this desktop client.';
+      ? '后端请求已成功，但在数据库尚未填充前，当前仍返回演示目录结果。'
+      : '当前展示的是这个桌面客户端可见的真实市场数据。';
 
   return (
     <main className="shell">
@@ -715,27 +1156,26 @@ function DesktopApp() {
         <header className="topbar">
           <div>
             <p className="eyebrow">PrimeSkill Pro</p>
-            <h1>Agent Marketplace</h1>
+            <h1>技能市场</h1>
           </div>
           <nav className="topnav" aria-label="Primary">
-            <a href="#marketplace">Explore</a>
-            <a href="#installs">My installs</a>
-            <a href="#status">Environment</a>
+            <a href="#marketplace">浏览市场</a>
+            <a href="#installs">我的安装</a>
+            <a href="#status">运行环境</a>
           </nav>
         </header>
 
         <section className="hero" id="marketplace">
           <div className="hero__content">
-            <span className="pill pill--brand">Project install loop live</span>
-            <h2>Search, issue install tickets, apply verified project templates, and read back “my installs”.</h2>
+            <span className="pill pill--brand">项目安装主链路已打通</span>
+            <h2>搜索 Skill、签发安装票据、应用已验证项目模板，并回读“我的安装”。</h2>
             <p>
-              This shell now runs the first real installation chain: desktop UI syncs verified tool instances and
-              workspaces, backend signs project-scope install tickets, and native core materializes Cursor or OpenCode
-              targets before the backend records the local binding.
+              当前桌面端已经跑通第一条真实安装链路：桌面 UI 同步已验证工具实例与工作区，后端签发项目级安装票据，
+              Native Core 落盘 Cursor 或 OpenCode 目标文件，最后由后端记录本地安装绑定。
             </p>
             <div className="search-panel">
               <label className="search-panel__label" htmlFor="skill-search">
-                Search skills
+                搜索技能
               </label>
               <div className="search-panel__controls">
                 <input
@@ -743,10 +1183,10 @@ function DesktopApp() {
                   type="search"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Try: api, prompt, research, frontend"
+                  placeholder="试试：api、prompt、research、frontend"
                 />
                 <button type="button" className="button button--secondary" onClick={() => setQuery('')}>
-                  Reset
+                  重置
                 </button>
               </div>
               <div className="filter-row">
@@ -773,14 +1213,14 @@ function DesktopApp() {
 
           <div className="hero__summary">
             <div className="summary-card">
-              <span className="eyebrow">Current focus</span>
-              <strong>Verified project scope only</strong>
-              <p>Install apply is intentionally limited to Cursor project rules and OpenCode project skills this round.</p>
+              <span className="eyebrow">当前范围</span>
+              <strong>仅限已验证的项目级安装</strong>
+              <p>本轮默认只开放 Cursor 项目规则与 OpenCode 项目技能的安装应用。</p>
             </div>
             <div className="summary-card">
-              <span className="eyebrow">Live contracts</span>
+              <span className="eyebrow">当前合约</span>
               <strong>`/api/my/*` + Tauri install commands</strong>
-              <p>The drawer now uses real backend runtime APIs and Tauri commands instead of the previous mock preview.</p>
+              <p>当前抽屉已使用真实后端运行时 API 与 Tauri 命令，不再依赖之前的 mock 预览路径。</p>
             </div>
           </div>
         </section>
@@ -789,7 +1229,7 @@ function DesktopApp() {
           <div className="results-section__header">
             <div>
               <span className="eyebrow">{sectionTitle}</span>
-              <h2>{query.trim() ? `Results for "${query.trim()}"` : 'Curated starter skills'}</h2>
+              <h2>{query.trim() ? `"${query.trim()}" 的搜索结果` : '精选起步技能'}</h2>
             </div>
             <p>{sectionDescription}</p>
           </div>
@@ -798,18 +1238,18 @@ function DesktopApp() {
 
           {!loadingMarketplace && marketplaceError ? (
             <div className="feedback-card feedback-card--error">
-              <strong>Marketplace request failed</strong>
+              <strong>市场请求失败</strong>
               <p>{marketplaceError}</p>
               <button type="button" className="button" onClick={() => setReloadNonce((current) => current + 1)}>
-                Retry
+                重试
               </button>
             </div>
           ) : null}
 
           {!loadingMarketplace && !marketplaceError && marketplace && marketplace.items.length === 0 ? (
             <div className="feedback-card">
-              <strong>No skills matched that search.</strong>
-              <p>Try a broader keyword like `api`, `research`, or `frontend`, or clear the search to return to recommendations.</p>
+              <strong>没有匹配到相关 Skill。</strong>
+              <p>可以尝试更宽泛的关键词，如 `api`、`research`、`frontend`，或者清空搜索词返回推荐列表。</p>
             </div>
           ) : null}
 
@@ -822,7 +1262,7 @@ function DesktopApp() {
           ) : null}
         </section>
 
-        <InstalledSection installs={installs} />
+        <InstalledSection installs={installs} onViewInstall={setSelectedInstall} />
 
         <section id="status">
           <StatusPanel
@@ -849,6 +1289,19 @@ function DesktopApp() {
           onRequestWorkspace={handleWorkspaceRequest}
           onInstallCompleted={refreshRuntimeLists}
           onClose={() => setSelectedSkill(null)}
+        />
+      ) : null}
+
+      {selectedInstall ? (
+        <InstallDetailDrawer
+          install={selectedInstall}
+          detail={selectedInstallDetail}
+          localDetail={selectedLocalInstallDetail}
+          loading={loadingInstallDetail}
+          loadError={installDetailError}
+          deviceToken={deviceToken}
+          onInstallChanged={refreshRuntimeLists}
+          onClose={() => setSelectedInstall(null)}
         />
       ) : null}
     </main>

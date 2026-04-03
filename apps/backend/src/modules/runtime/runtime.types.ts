@@ -3,6 +3,7 @@ import {
   IsArray,
   IsIn,
   IsInt,
+  IsObject,
   IsOptional,
   IsString,
   MaxLength,
@@ -180,5 +181,52 @@ export interface MyInstallDto {
   resolvedTargetPath: string;
   installStatus: string;
   installedAt: string;
+  lastVerifiedAt?: string;
   state: 'active' | 'removed' | 'drifted';
+}
+
+export interface MyInstallManifestSummaryDto {
+  ticketId?: string;
+  templateCode?: string;
+  packagingMode?: string;
+  contentManagementMode?: string;
+  targetPathTemplate?: string;
+  filenameTemplate?: string;
+  packageUri?: string;
+}
+
+export interface MyInstallDetailDto extends MyInstallDto {
+  operationType: 'install' | 'upgrade' | 'uninstall' | 'rollback';
+  traceId?: string;
+  manifest?: MyInstallManifestSummaryDto;
+}
+
+export class ReportInstallVerificationRequestDto {
+  @IsIn(['verified', 'drifted'])
+  verificationStatus!: 'verified' | 'drifted';
+
+  @IsOptional()
+  @IsString()
+  resolvedTargetPath?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  driftReasons?: string[];
+
+  @IsOptional()
+  @IsObject()
+  payload?: Record<string, unknown>;
+
+  @IsString()
+  @MinLength(2)
+  @MaxLength(128)
+  traceId!: string;
+}
+
+export interface ReportInstallVerificationResponse {
+  bindingId: number;
+  installRecordId: number;
+  state: 'active' | 'drifted';
+  lastVerifiedAt: string;
 }

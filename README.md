@@ -21,7 +21,9 @@ This repo now includes the first project-scope install loop for verified templat
   - Cursor project rules
   - OpenCode project skills
 - Backend records `local_install_binding`
-- Desktop UI reads `GET /api/my/installs` to render “My installs”
+- Desktop UI reads `GET /api/my/installs` to render “我的安装”
+- Native Core can fetch real `package_uri` artifacts as zip payloads or legacy `prime_skill_package.v1` JSON packages
+- Desktop UI and admin-web have started the first “Chinese-first” copy cleanup for user-facing text
 
 The current apply path is intentionally limited:
 
@@ -29,6 +31,12 @@ The current apply path is intentionally limited:
 - verified templates only
 - Cursor `cursor_project_rule`
 - OpenCode `opencode_project_skill`
+
+Current non-default paths:
+
+- `Cline` / `Codex` are still Windows PoC only
+- `global` install is still Windows PoC only
+- browser preview mode still cannot execute local installation
 
 ## Local setup
 
@@ -97,12 +105,28 @@ curl http://127.0.0.1:3000/health
    - a local file exists at one of the verified project targets:
      - `<workspace>/.cursor/rules/<skill-slug>.mdc`
      - `<workspace>/.opencode/skills/<skill-slug>/SKILL.md`
+   - opening `View details` on the installed card shows:
+     - backend install detail from `GET /api/my/installs/:id`
+     - local registry file metadata from Tauri `get_installation_detail`
+     - local verification from Tauri `verify_installation`
 
-6. Optional backend verification:
+6. Validate uninstall:
+   - from install detail, click `Uninstall`
+   - the drawer shows `ticket_issued -> downloading -> staging -> verifying -> committing -> success`
+   - the managed local files are removed or restored from previous content
+   - the “My installs” section refreshes and no longer shows the removed binding
+
+7. Optional backend verification:
 
 ```bash
 curl -H "Authorization: Bearer <desktop-token>" http://127.0.0.1:3000/api/my/installs
 ```
+
+8. Validate drift detection:
+   - from install detail, click `Verify`
+   - intact installs report `verified` and backend writes `last_verified_at`
+   - if a managed file is edited or deleted locally, `Verify` reports `drifted`
+   - drifted bindings remain visible in `My installs` and can still be uninstalled or rolled back
 
 ## Checks
 
@@ -123,6 +147,7 @@ pnpm backend:test:integration
 ## Current gaps
 
 - Backend integration tests still depend on a real local PostgreSQL/Redis stack
-- Tauri apply currently writes a minimal placeholder payload instead of downloading and unpacking a real skill artifact
-- rollback and verify interfaces are preserved, but not implemented yet
+- Native apply can now fetch `package_uri` artifacts as either zip payloads or legacy `prime_skill_package.v1` JSON documents, but backend-side artifact build/publish is still minimal
+- rollback is implemented as a local file-content boundary for `replace` and `managed_block`, but backend-side verify/artifact provenance is still incomplete
+- verify is now a minimal local-real loop that updates `last_verified_at` and `active/drifted`, but it still does not use install tickets or artifact re-fetch
 - browser preview mode cannot execute local installation

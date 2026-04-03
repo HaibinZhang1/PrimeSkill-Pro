@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
+import { URL } from 'node:url';
 
 import type { INestApplication } from '@nestjs/common';
 import { Queue } from 'bullmq';
@@ -34,6 +35,13 @@ async function seedSkillLifecycleFixture() {
     INSERT INTO skill_tag (id, name, created_by, updated_by)
       VALUES (20, 'automation', 1, 1), (21, 'internal', 1, 1);
   `);
+}
+
+function parseBinary(res: any, callback: (error: Error | null, body: Buffer) => void) {
+  const chunks: Buffer[] = [];
+  res.setEncoding(null);
+  res.on('data', (chunk: Buffer) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+  res.on('end', () => callback(null, Buffer.concat(chunks)));
 }
 
 before(async () => {
@@ -239,4 +247,171 @@ test('approve review requires reviewer or admin role', async () => {
 
   assert.equal(forbiddenRes.status, 403);
   assert.equal(forbiddenRes.body.code, 'PERM_ROLE_FORBIDDEN');
+});
+
+test('inline artifact publish creates internal package uri and serves zip bytes', async () => {
+  const createSkillRes = await request(app.getHttpServer())
+    .post('/api/skills')
+    .set('authorization', ownerAuthHeader)
+    .send({
+      skillKey: 'inline_artifact_skill',
+      name: 'Inline Artifact Skill',
+      visibilityType: 'department'
+    });
+  assert.equal(createSkillRes.status, 201, JSON.stringify(createSkillRes.body));
+  const skillId = createSkillRes.body.skillId as number;
+
+  const createVersionRes = await request(app.getHttpServer())
+    .post(`/api/skills/${skillId}/versions`)
+    .set('authorization', ownerAuthHeader)
+    .send({
+      version: '1.0.0',
+      readmeText: 'inline release',
+      aiToolsJson: ['cursor'],
+      installModeJson: { scope: 'project' },
+      artifact: {
+        format: 'zip',
+        entries: [{ path: 'rule.mdc', content: '# Inline Rule\n\nUse JSON.' }]
+      }
+    });
+
+  assert.equal(createVersionRes.status, 201, JSON.stringify(createVersionRes.body));
+  assert.equal(createVersionRes.body.packageSource, 'internal');
+  assert.match(createVersionRes.body.packageUri as string, /\/artifacts\/skill-version-artifacts\//);
+  assert.match(createVersionRes.body.checksum as string, /^sha256:/);
+
+  const packagePath = new URL(createVersionRes.body.packageUri as string).pathname;
+  const downloadRes = await request(app.getHttpServer())
+    .get(packagePath)
+    .buffer(true)
+    .parse(parseBinary);
+
+  assert.equal(downloadRes.status, 200);
+  assert.equal(downloadRes.headers['x-primeskill-checksum'], createVersionRes.body.checksum);
+  assert.match(downloadRes.headers['content-type'], /application\/zip/);
+  assert.equal(Buffer.isBuffer(downloadRes.body), true);
+  assert.equal((downloadRes.body as Buffer).subarray(0, 4).toString('binary'), 'PK\u0003\u0004');
+});
+
+test('admin endpoints expose current versions, internal artifact metadata, and active review queue', async () => {
+  const publishedSkillRes = await request(app.getHttpServer())
+    .post('/api/skills')
+    .set('authorization', ownerAuthHeader)
+    .send({
+      skillKey: 'published_admin_skill',
+      name: 'Published Admin Skill',
+      summary: 'published summary',
+      visibilityType: 'department'
+    });
+  assert.equal(publishedSkillRes.status, 201, JSON.stringify(publishedSkillRes.body));
+  const publishedSkillId = publishedSkillRes.body.skillId as number;
+
+  const publishedVersionRes = await request(app.getHttpServer())
+    .post(`/api/skills/${publishedSkillId}/versions`)
+    .set('authorization', ownerAuthHeader)
+    .send({
+      version: '1.0.0',
+      aiToolsJson: ['cursor'],
+      installModeJson: { scope: 'project' },
+      artifact: {
+        format: 'zip',
+        entries: [{ path: 'rule.mdc', content: '# Published\n' }]
+      }
+    });
+  assert.equal(publishedVersionRes.status, 201, JSON.stringify(publishedVersionRes.body));
+  const publishedVersionId = publishedVersionRes.body.skillVersionId as number;
+
+  const publishedReviewRes = await request(app.getHttpServer())
+    .post(`/api/skills/${publishedSkillId}/submit-review`)
+    .set('authorization', ownerAuthHeader)
+    .send({
+      skillVersionId: publishedVersionId,
+      reviewerId: 2,
+      comment: 'publish this'
+    });
+  assert.equal(publishedReviewRes.status, 201, JSON.stringify(publishedReviewRes.body));
+
+  const approveRes = await request(app.getHttpServer())
+    .post(`/api/reviews/${publishedReviewRes.body.reviewTaskId as number}/approve`)
+    .set('authorization', reviewerAuthHeader)
+    .send({});
+  assert.equal(approveRes.status, 200, JSON.stringify(approveRes.body));
+
+  const pendingSkillRes = await request(app.getHttpServer())
+    .post('/api/skills')
+    .set('authorization', ownerAuthHeader)
+    .send({
+      skillKey: 'pending_admin_skill',
+      name: 'Pending Admin Skill',
+      summary: 'pending summary',
+      visibilityType: 'department'
+    });
+  assert.equal(pendingSkillRes.status, 201, JSON.stringify(pendingSkillRes.body));
+  const pendingSkillId = pendingSkillRes.body.skillId as number;
+
+  const pendingVersionRes = await request(app.getHttpServer())
+    .post(`/api/skills/${pendingSkillId}/versions`)
+    .set('authorization', ownerAuthHeader)
+    .send({
+      version: '0.9.0',
+      aiToolsJson: ['opencode'],
+      installModeJson: { scope: 'project' },
+      artifact: {
+        format: 'legacy_json',
+        entries: [{ path: 'SKILL.md', content: '# Pending\n' }]
+      }
+    });
+  assert.equal(pendingVersionRes.status, 201, JSON.stringify(pendingVersionRes.body));
+  const pendingVersionId = pendingVersionRes.body.skillVersionId as number;
+
+  const pendingReviewRes = await request(app.getHttpServer())
+    .post(`/api/skills/${pendingSkillId}/submit-review`)
+    .set('authorization', ownerAuthHeader)
+    .send({
+      skillVersionId: pendingVersionId,
+      reviewerId: 2,
+      comment: 'queue this'
+    });
+  assert.equal(pendingReviewRes.status, 201, JSON.stringify(pendingReviewRes.body));
+
+  const listRes = await request(app.getHttpServer())
+    .get('/api/admin/skills')
+    .set('authorization', reviewerAuthHeader);
+  assert.equal(listRes.status, 200, JSON.stringify(listRes.body));
+  const publishedItem = (listRes.body.items as Array<{ skillKey: string; currentVersion?: { artifact: { packageSource: string } } }>).find(
+    (item) => item.skillKey === 'published_admin_skill'
+  );
+  assert.ok(publishedItem);
+  assert.equal(publishedItem?.currentVersion?.artifact.packageSource, 'internal');
+
+  const detailRes = await request(app.getHttpServer())
+    .get(`/api/admin/skills/${pendingSkillId}`)
+    .set('authorization', reviewerAuthHeader);
+  assert.equal(detailRes.status, 200, JSON.stringify(detailRes.body));
+  assert.equal(detailRes.body.skillKey, 'pending_admin_skill');
+  assert.equal(detailRes.body.versions[0].artifact.packageSource, 'internal');
+  assert.equal(detailRes.body.reviewTasks[0].taskStatus, 'assigned');
+
+  const queueRes = await request(app.getHttpServer())
+    .get('/api/admin/reviews/queue')
+    .set('authorization', reviewerAuthHeader);
+  assert.equal(queueRes.status, 200, JSON.stringify(queueRes.body));
+  const queued = (queueRes.body.items as Array<{ skillKey: string; artifact: { packageFormat?: string } }>).find(
+    (item) => item.skillKey === 'pending_admin_skill'
+  );
+  assert.ok(queued);
+  assert.equal(queued?.artifact.packageFormat, 'legacy_json');
+});
+
+test('admin skill options endpoint exposes categories and tags for create skill form', async () => {
+  const optionsRes = await request(app.getHttpServer())
+    .get('/api/admin/skill-options')
+    .set('authorization', reviewerAuthHeader);
+
+  assert.equal(optionsRes.status, 200, JSON.stringify(optionsRes.body));
+  assert.deepEqual(optionsRes.body.categories, [{ id: 10, name: 'Productivity' }]);
+  assert.deepEqual(optionsRes.body.tags, [
+    { id: 20, name: 'automation' },
+    { id: 21, name: 'internal' }
+  ]);
 });

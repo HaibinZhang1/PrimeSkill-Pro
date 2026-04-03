@@ -24,7 +24,8 @@ const MIGRATIONS = [
   'M006_install_governance.sql',
   'M007_search_indexes.sql',
   'M008_audit_seed.sql',
-  'M009_constraints_finalize.sql'
+  'M009_constraints_finalize.sql',
+  'M010_skill_version_artifact.sql'
 ];
 const RESET_DB_LOCK_KEY = 9020401;
 

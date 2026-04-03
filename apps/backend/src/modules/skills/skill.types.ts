@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMinSize,
   IsArray,
   IsIn,
   IsInt,
@@ -11,7 +12,8 @@ import {
   Matches,
   MaxLength,
   Min,
-  MinLength
+  MinLength,
+  ValidateNested
 } from 'class-validator';
 
 export class SkillIdParamDto {
@@ -72,12 +74,35 @@ export interface CreateSkillResponse {
   status: 'draft';
 }
 
+export class InlineArtifactEntryDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(512)
+  path!: string;
+
+  @IsString()
+  content!: string;
+}
+
+export class InlineArtifactDto {
+  @IsOptional()
+  @IsIn(['zip', 'legacy_json'])
+  format: 'zip' | 'legacy_json' = 'zip';
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => InlineArtifactEntryDto)
+  entries!: InlineArtifactEntryDto[];
+}
+
 export class CreateSkillVersionRequestDto {
   @IsString()
   @MinLength(1)
   @MaxLength(64)
   version!: string;
 
+  @IsOptional()
   @IsString()
   @IsUrl({
     require_tld: false,
@@ -106,6 +131,7 @@ export class CreateSkillVersionRequestDto {
   @IsObject()
   installModeJson?: Record<string, unknown>;
 
+  @IsOptional()
   @IsString()
   @MinLength(8)
   @MaxLength(256)
@@ -114,6 +140,11 @@ export class CreateSkillVersionRequestDto {
   @IsOptional()
   @IsString()
   signature?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => InlineArtifactDto)
+  artifact?: InlineArtifactDto;
 }
 
 export interface CreateSkillVersionResponse {
@@ -121,6 +152,9 @@ export interface CreateSkillVersionResponse {
   reviewStatus: 'pending';
   stage1IndexStatus: 'pending';
   stage2IndexStatus: 'pending';
+  packageUri: string;
+  checksum: string;
+  packageSource: 'external' | 'internal';
 }
 
 export class SubmitSkillReviewRequestDto {
@@ -159,4 +193,126 @@ export interface ApproveReviewResponse {
   skillStatus: 'published';
   reviewStatus: 'approved';
   stage1JobId: string;
+}
+
+export class AdminSkillListQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  search?: string;
+
+  @IsOptional()
+  @IsIn(['draft', 'pending_review', 'approved', 'published', 'rejected', 'archived'])
+  skillStatus?: 'draft' | 'pending_review' | 'approved' | 'published' | 'rejected' | 'archived';
+
+  @IsOptional()
+  @IsIn(['pending', 'approved', 'rejected'])
+  reviewStatus?: 'pending' | 'approved' | 'rejected';
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  @Min(1)
+  limit = 50;
+}
+
+export class AdminReviewQueueQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  @Min(1)
+  limit = 50;
+}
+
+export interface AdminArtifactSummary {
+  packageSource: 'external' | 'internal';
+  packageUri: string;
+  checksum: string;
+  packageFormat?: 'zip' | 'legacy_json';
+  fileName?: string;
+  byteSize?: number;
+  entryCount?: number;
+}
+
+export interface AdminReviewTaskSummary {
+  reviewTaskId: number;
+  skillVersionId: number;
+  version: string;
+  reviewStatus: 'pending' | 'approved' | 'rejected';
+  taskStatus: 'created' | 'assigned' | 'in_review' | 'approved' | 'rejected' | 'closed';
+  reviewRound: number;
+  submitterId: number;
+  submitterDisplayName?: string;
+  reviewerId?: number;
+  reviewerDisplayName?: string;
+  comment?: string;
+  createdAt: string;
+  reviewedAt?: string;
+}
+
+export interface AdminSkillVersionSummary {
+  skillVersionId: number;
+  version: string;
+  reviewStatus: 'pending' | 'approved' | 'rejected';
+  packageUri: string;
+  checksum: string;
+  publishedAt?: string;
+  createdAt: string;
+  artifact: AdminArtifactSummary;
+}
+
+export interface AdminSkillListItem {
+  skillId: number;
+  skillKey: string;
+  name: string;
+  summary?: string;
+  status: 'draft' | 'pending_review' | 'approved' | 'published' | 'rejected' | 'archived';
+  visibilityType: 'public' | 'department' | 'private';
+  ownerUserId: number;
+  ownerDisplayName?: string;
+  ownerDepartmentId?: number;
+  ownerDepartmentName?: string;
+  categoryName?: string;
+  updatedAt: string;
+  currentVersion?: AdminSkillVersionSummary;
+  activeReviewTask?: AdminReviewTaskSummary;
+}
+
+export interface AdminSkillDetailResponse {
+  skillId: number;
+  skillKey: string;
+  name: string;
+  summary?: string;
+  description?: string;
+  status: 'draft' | 'pending_review' | 'approved' | 'published' | 'rejected' | 'archived';
+  visibilityType: 'public' | 'department' | 'private';
+  ownerUserId: number;
+  ownerDisplayName?: string;
+  ownerDepartmentId?: number;
+  ownerDepartmentName?: string;
+  categoryName?: string;
+  tags: Array<{ tagId: number; name: string }>;
+  versions: AdminSkillVersionSummary[];
+  reviewTasks: AdminReviewTaskSummary[];
+  updatedAt: string;
+}
+
+export interface AdminSkillOptionItem {
+  id: number;
+  name: string;
+}
+
+export interface AdminSkillEditorOptionsResponse {
+  categories: AdminSkillOptionItem[];
+  tags: AdminSkillOptionItem[];
+}
+
+export interface AdminReviewQueueItem extends AdminReviewTaskSummary {
+  skillId: number;
+  skillKey: string;
+  skillName: string;
+  skillStatus: 'draft' | 'pending_review' | 'approved' | 'published' | 'rejected' | 'archived';
+  ownerDepartmentId?: number;
+  ownerDepartmentName?: string;
+  artifact: AdminArtifactSummary;
 }

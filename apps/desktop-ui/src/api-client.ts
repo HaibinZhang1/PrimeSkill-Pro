@@ -138,7 +138,37 @@ export interface MyInstall {
   resolvedTargetPath: string;
   installStatus: string;
   installedAt: string;
+  lastVerifiedAt?: string;
   state: 'active' | 'removed' | 'drifted';
+}
+
+export interface MyInstallDetail extends MyInstall {
+  operationType: 'install' | 'upgrade' | 'uninstall' | 'rollback';
+  traceId?: string;
+  manifest?: {
+    ticketId?: string;
+    templateCode?: string;
+    packagingMode?: string;
+    contentManagementMode?: string;
+    targetPathTemplate?: string;
+    filenameTemplate?: string;
+    packageUri?: string;
+  };
+}
+
+export interface ReportInstallVerificationInput {
+  verificationStatus: 'verified' | 'drifted';
+  resolvedTargetPath?: string;
+  driftReasons?: string[];
+  payload?: Record<string, unknown>;
+  traceId: string;
+}
+
+export interface ReportInstallVerificationResponse {
+  bindingId: number;
+  installRecordId: number;
+  state: 'active' | 'drifted';
+  lastVerifiedAt: string;
 }
 
 const defaultApiBaseUrl = 'http://127.0.0.1:3000';
@@ -271,5 +301,22 @@ export async function listMyWorkspaces(): Promise<{ items: MyWorkspace[] }> {
 export async function listMyInstalls(): Promise<{ items: MyInstall[] }> {
   return readJson<{ items: MyInstall[] }>(`${resolveApiBaseUrl()}/api/my/installs`, {
     headers: buildApiHeaders()
+  });
+}
+
+export async function getMyInstallDetail(bindingId: number): Promise<MyInstallDetail> {
+  return readJson<MyInstallDetail>(`${resolveApiBaseUrl()}/api/my/installs/${bindingId}`, {
+    headers: buildApiHeaders()
+  });
+}
+
+export async function reportInstallVerification(
+  bindingId: number,
+  input: ReportInstallVerificationInput
+): Promise<ReportInstallVerificationResponse> {
+  return readJson<ReportInstallVerificationResponse>(`${resolveApiBaseUrl()}/api/my/installs/${bindingId}/verify`, {
+    method: 'POST',
+    headers: buildApiHeaders(),
+    body: JSON.stringify(input)
   });
 }

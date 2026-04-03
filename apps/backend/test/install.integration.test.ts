@@ -165,7 +165,8 @@ test('install ticket lifecycle persists and blocks stage out-of-order', async ()
     [installRecordId]
   );
   assert.equal(record.rows[0].install_status, 'success');
-  assert.match(record.rows[0].manifest_snapshot_json, /"ticketId":"tk_/);
+  const manifestSnapshot = JSON.parse(record.rows[0].manifest_snapshot_json) as { ticketId?: string };
+  assert.match(manifestSnapshot.ticketId ?? '', /^tk_/);
 
   const binding = await queryDb<{ c: string }>(
     `
@@ -354,4 +355,343 @@ test('permission revoke blocks manifest, consume, and successful final report fo
     });
   assert.equal(reportRes.status, 403);
   assert.equal(reportRes.body.code, 'PERM_NO_USE_PERMISSION');
+});
+
+test('install detail endpoint and uninstall flow remove active binding', async () => {
+  const installTicketRes = await request(app.getHttpServer())
+    .post('/api/desktop/install-tickets')
+    .set('authorization', authHeader)
+    .send({
+      skillId: 100,
+      skillVersionId: 101,
+      operationType: 'install',
+      targetScope: 'project',
+      toolInstanceId: 20,
+      workspaceRegistryId: 30,
+      idempotencyKey: 'idem-install-detail-001'
+    });
+
+  assert.equal(installTicketRes.status, 200, JSON.stringify(installTicketRes.body));
+  const installTicket = installTicketRes.body as { ticketId: string; installRecordId: number };
+
+  for (const stage of ['ticket_issued', 'downloading', 'staging', 'verifying', 'committing'] as const) {
+    const consumeRes = await request(app.getHttpServer())
+      .post(`/api/native/install-tickets/${installTicket.ticketId}/consume`)
+      .set('authorization', authHeader)
+      .set('x-device-token', DEVICE_TOKEN)
+      .send({
+        installRecordId: installTicket.installRecordId,
+        stage,
+        result: 'ok',
+        traceId: `trace-install-detail-${stage}`
+      });
+    assert.equal(consumeRes.status, 200, JSON.stringify(consumeRes.body));
+  }
+
+  const installReportRes = await request(app.getHttpServer())
+    .post(`/api/native/install-operations/${installTicket.installRecordId}/report`)
+    .set('authorization', authHeader)
+    .set('x-device-token', DEVICE_TOKEN)
+    .send({
+      finalStatus: 'success',
+      resolvedTargetPath: 'D:/repo/demo/.cursor/rules/api_contract.mdc',
+      traceId: 'trace-install-detail-final'
+    });
+  assert.equal(installReportRes.status, 200, JSON.stringify(installReportRes.body));
+
+  const myInstallsRes = await request(app.getHttpServer())
+    .get('/api/my/installs')
+    .set('authorization', authHeader);
+  assert.equal(myInstallsRes.status, 200, JSON.stringify(myInstallsRes.body));
+  assert.equal(myInstallsRes.body.items.length, 1);
+  const bindingId = myInstallsRes.body.items[0].bindingId as number;
+
+  const detailRes = await request(app.getHttpServer())
+    .get(`/api/my/installs/${bindingId}`)
+    .set('authorization', authHeader);
+  assert.equal(detailRes.status, 200, JSON.stringify(detailRes.body));
+  assert.equal(detailRes.body.bindingId, bindingId);
+  assert.equal(detailRes.body.manifest.templateCode, 'cursor_project_rule');
+  assert.equal(detailRes.body.manifest.contentManagementMode, 'replace');
+
+  const uninstallTicketRes = await request(app.getHttpServer())
+    .post('/api/desktop/install-tickets')
+    .set('authorization', authHeader)
+    .send({
+      skillId: 100,
+      skillVersionId: 101,
+      operationType: 'uninstall',
+      targetScope: 'project',
+      toolInstanceId: 20,
+      workspaceRegistryId: 30,
+      idempotencyKey: 'idem-uninstall-detail-001'
+    });
+  assert.equal(uninstallTicketRes.status, 200, JSON.stringify(uninstallTicketRes.body));
+  const uninstallTicket = uninstallTicketRes.body as {
+    ticketId: string;
+    installRecordId: number;
+    retryToken?: string;
+  };
+
+  for (const stage of ['ticket_issued', 'downloading', 'staging', 'verifying', 'committing'] as const) {
+    const consumeRes = await request(app.getHttpServer())
+      .post(`/api/native/install-tickets/${uninstallTicket.ticketId}/consume`)
+      .set('authorization', authHeader)
+      .set('x-device-token', DEVICE_TOKEN)
+      .send({
+        installRecordId: uninstallTicket.installRecordId,
+        stage,
+        result: 'ok',
+        traceId: `trace-uninstall-detail-${stage}`,
+        retryToken: uninstallTicket.retryToken
+      });
+    assert.equal(consumeRes.status, 200, JSON.stringify(consumeRes.body));
+  }
+
+  const uninstallReportRes = await request(app.getHttpServer())
+    .post(`/api/native/install-operations/${uninstallTicket.installRecordId}/report`)
+    .set('authorization', authHeader)
+    .set('x-device-token', DEVICE_TOKEN)
+    .send({
+      finalStatus: 'success',
+      resolvedTargetPath: 'D:/repo/demo/.cursor/rules/api_contract.mdc',
+      traceId: 'trace-uninstall-detail-final'
+    });
+  assert.equal(uninstallReportRes.status, 200, JSON.stringify(uninstallReportRes.body));
+
+  const installsAfterUninstallRes = await request(app.getHttpServer())
+    .get('/api/my/installs')
+    .set('authorization', authHeader);
+  assert.equal(installsAfterUninstallRes.status, 200, JSON.stringify(installsAfterUninstallRes.body));
+  assert.deepEqual(installsAfterUninstallRes.body.items, []);
+
+  const removedBinding = await queryDb<{ state: string; removed_at: string | null }>(
+    `
+      SELECT state, removed_at::text
+      FROM local_install_binding
+      WHERE client_device_id = 10
+        AND resolved_target_path = 'D:/repo/demo/.cursor/rules/api_contract.mdc'
+      ORDER BY id DESC
+      LIMIT 1
+    `
+  );
+  assert.equal(removedBinding.rows[0].state, 'removed');
+  assert.ok(removedBinding.rows[0].removed_at);
+});
+
+test('rollback flow removes active binding and finalizes install record as rolled_back', async () => {
+  const installTicketRes = await request(app.getHttpServer())
+    .post('/api/desktop/install-tickets')
+    .set('authorization', authHeader)
+    .send({
+      skillId: 100,
+      skillVersionId: 101,
+      operationType: 'install',
+      targetScope: 'project',
+      toolInstanceId: 20,
+      workspaceRegistryId: 30,
+      idempotencyKey: 'idem-install-rollback-001'
+    });
+
+  assert.equal(installTicketRes.status, 200, JSON.stringify(installTicketRes.body));
+  const installTicket = installTicketRes.body as { ticketId: string; installRecordId: number };
+
+  for (const stage of ['ticket_issued', 'downloading', 'staging', 'verifying', 'committing'] as const) {
+    const consumeRes = await request(app.getHttpServer())
+      .post(`/api/native/install-tickets/${installTicket.ticketId}/consume`)
+      .set('authorization', authHeader)
+      .set('x-device-token', DEVICE_TOKEN)
+      .send({
+        installRecordId: installTicket.installRecordId,
+        stage,
+        result: 'ok',
+        traceId: `trace-install-rollback-${stage}`
+      });
+    assert.equal(consumeRes.status, 200, JSON.stringify(consumeRes.body));
+  }
+
+  const installReportRes = await request(app.getHttpServer())
+    .post(`/api/native/install-operations/${installTicket.installRecordId}/report`)
+    .set('authorization', authHeader)
+    .set('x-device-token', DEVICE_TOKEN)
+    .send({
+      finalStatus: 'success',
+      resolvedTargetPath: 'D:/repo/demo/.cursor/rules/api_contract.mdc',
+      traceId: 'trace-install-rollback-final'
+    });
+  assert.equal(installReportRes.status, 200, JSON.stringify(installReportRes.body));
+
+  const rollbackTicketRes = await request(app.getHttpServer())
+    .post('/api/desktop/install-tickets')
+    .set('authorization', authHeader)
+    .send({
+      skillId: 100,
+      skillVersionId: 101,
+      operationType: 'rollback',
+      targetScope: 'project',
+      toolInstanceId: 20,
+      workspaceRegistryId: 30,
+      idempotencyKey: 'idem-rollback-flow-001'
+    });
+  assert.equal(rollbackTicketRes.status, 200, JSON.stringify(rollbackTicketRes.body));
+  const rollbackTicket = rollbackTicketRes.body as {
+    ticketId: string;
+    installRecordId: number;
+    retryToken?: string;
+  };
+
+  for (const stage of ['ticket_issued', 'downloading', 'staging', 'verifying', 'committing'] as const) {
+    const consumeRes = await request(app.getHttpServer())
+      .post(`/api/native/install-tickets/${rollbackTicket.ticketId}/consume`)
+      .set('authorization', authHeader)
+      .set('x-device-token', DEVICE_TOKEN)
+      .send({
+        installRecordId: rollbackTicket.installRecordId,
+        stage,
+        result: 'ok',
+        traceId: `trace-rollback-flow-${stage}`,
+        retryToken: rollbackTicket.retryToken
+      });
+    assert.equal(consumeRes.status, 200, JSON.stringify(consumeRes.body));
+  }
+
+  const rollbackReportRes = await request(app.getHttpServer())
+    .post(`/api/native/install-operations/${rollbackTicket.installRecordId}/report`)
+    .set('authorization', authHeader)
+    .set('x-device-token', DEVICE_TOKEN)
+    .send({
+      finalStatus: 'rolled_back',
+      resolvedTargetPath: 'D:/repo/demo/.cursor/rules/api_contract.mdc',
+      traceId: 'trace-rollback-flow-final'
+    });
+  assert.equal(rollbackReportRes.status, 200, JSON.stringify(rollbackReportRes.body));
+
+  const installsAfterRollbackRes = await request(app.getHttpServer())
+    .get('/api/my/installs')
+    .set('authorization', authHeader);
+  assert.equal(installsAfterRollbackRes.status, 200, JSON.stringify(installsAfterRollbackRes.body));
+  assert.deepEqual(installsAfterRollbackRes.body.items, []);
+
+  const rollbackRecord = await queryDb<{ install_status: string }>(
+    `
+      SELECT install_status
+      FROM install_record
+      WHERE id = $1
+    `,
+    [rollbackTicket.installRecordId]
+  );
+  assert.equal(rollbackRecord.rows[0].install_status, 'rolled_back');
+
+  const removedBinding = await queryDb<{ state: string; removed_at: string | null }>(
+    `
+      SELECT state, removed_at::text
+      FROM local_install_binding
+      WHERE client_device_id = 10
+        AND resolved_target_path = 'D:/repo/demo/.cursor/rules/api_contract.mdc'
+      ORDER BY id DESC
+      LIMIT 1
+    `
+  );
+  assert.equal(removedBinding.rows[0].state, 'removed');
+  assert.ok(removedBinding.rows[0].removed_at);
+});
+
+test('verify flow writes last_verified_at, marks drifted bindings, and still allows uninstall', async () => {
+  const installTicketRes = await request(app.getHttpServer())
+    .post('/api/desktop/install-tickets')
+    .set('authorization', authHeader)
+    .send({
+      skillId: 100,
+      skillVersionId: 101,
+      operationType: 'install',
+      targetScope: 'project',
+      toolInstanceId: 20,
+      workspaceRegistryId: 30,
+      idempotencyKey: 'idem-install-verify-001'
+    });
+
+  assert.equal(installTicketRes.status, 200, JSON.stringify(installTicketRes.body));
+  const installTicket = installTicketRes.body as { ticketId: string; installRecordId: number };
+
+  for (const stage of ['ticket_issued', 'downloading', 'staging', 'verifying', 'committing'] as const) {
+    const consumeRes = await request(app.getHttpServer())
+      .post(`/api/native/install-tickets/${installTicket.ticketId}/consume`)
+      .set('authorization', authHeader)
+      .set('x-device-token', DEVICE_TOKEN)
+      .send({
+        installRecordId: installTicket.installRecordId,
+        stage,
+        result: 'ok',
+        traceId: `trace-install-verify-${stage}`
+      });
+    assert.equal(consumeRes.status, 200, JSON.stringify(consumeRes.body));
+  }
+
+  const installReportRes = await request(app.getHttpServer())
+    .post(`/api/native/install-operations/${installTicket.installRecordId}/report`)
+    .set('authorization', authHeader)
+    .set('x-device-token', DEVICE_TOKEN)
+    .send({
+      finalStatus: 'success',
+      resolvedTargetPath: 'D:/repo/demo/.cursor/rules/api_contract.mdc',
+      traceId: 'trace-install-verify-final'
+    });
+  assert.equal(installReportRes.status, 200, JSON.stringify(installReportRes.body));
+
+  const installsRes = await request(app.getHttpServer())
+    .get('/api/my/installs')
+    .set('authorization', authHeader);
+  assert.equal(installsRes.status, 200, JSON.stringify(installsRes.body));
+  assert.equal(installsRes.body.items.length, 1);
+  const bindingId = installsRes.body.items[0].bindingId as number;
+
+  const verifyRes = await request(app.getHttpServer())
+    .post(`/api/my/installs/${bindingId}/verify`)
+    .set('authorization', authHeader)
+    .send({
+      verificationStatus: 'drifted',
+      resolvedTargetPath: 'D:/repo/demo/.cursor/rules/api_contract.mdc',
+      driftReasons: ['content_hash_mismatch'],
+      payload: {
+        verificationStatus: 'drifted',
+        files: [{ relativePath: 'api_contract.mdc', driftReasons: ['content_hash_mismatch'] }]
+      },
+      traceId: 'trace-verify-drifted'
+    });
+  assert.equal(verifyRes.status, 200, JSON.stringify(verifyRes.body));
+  assert.equal(verifyRes.body.state, 'drifted');
+  assert.ok(verifyRes.body.lastVerifiedAt);
+
+  const bindingAfterVerify = await queryDb<{ state: string; last_verified_at: string | null }>(
+    `
+      SELECT state, last_verified_at::text
+      FROM local_install_binding
+      WHERE id = $1
+    `,
+    [bindingId]
+  );
+  assert.equal(bindingAfterVerify.rows[0].state, 'drifted');
+  assert.ok(bindingAfterVerify.rows[0].last_verified_at);
+
+  const installsAfterVerifyRes = await request(app.getHttpServer())
+    .get('/api/my/installs')
+    .set('authorization', authHeader);
+  assert.equal(installsAfterVerifyRes.status, 200, JSON.stringify(installsAfterVerifyRes.body));
+  assert.equal(installsAfterVerifyRes.body.items.length, 1);
+  assert.equal(installsAfterVerifyRes.body.items[0].state, 'drifted');
+  assert.ok(installsAfterVerifyRes.body.items[0].lastVerifiedAt);
+
+  const uninstallTicketRes = await request(app.getHttpServer())
+    .post('/api/desktop/install-tickets')
+    .set('authorization', authHeader)
+    .send({
+      skillId: 100,
+      skillVersionId: 101,
+      operationType: 'uninstall',
+      targetScope: 'project',
+      toolInstanceId: 20,
+      workspaceRegistryId: 30,
+      idempotencyKey: 'idem-uninstall-after-drift-001'
+    });
+  assert.equal(uninstallTicketRes.status, 200, JSON.stringify(uninstallTicketRes.body));
 });

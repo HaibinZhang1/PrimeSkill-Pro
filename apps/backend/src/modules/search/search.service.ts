@@ -118,7 +118,7 @@ export class SearchService {
           COALESCE(ssp.keyword_document, '') AS keyword_document,
           COALESCE(ssp.supported_tools_json, '[]'::jsonb) AS supported_tools_json
         FROM skill s
-        JOIN skill_version sv ON sv.skill_id = s.id
+        JOIN skill_version sv ON sv.id = s.current_version_id
         LEFT JOIN skill_search_profile ssp ON ssp.skill_version_id = sv.id
         WHERE ${prefilter.whereSql}
       )
@@ -188,7 +188,7 @@ export class SearchService {
       SELECT EXISTS(
         SELECT 1
         FROM skill s
-        JOIN skill_version sv ON sv.skill_id = s.id
+        JOIN skill_version sv ON sv.id = s.current_version_id
         LIMIT 1
       ) AS ready
     `);

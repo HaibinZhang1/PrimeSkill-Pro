@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "tsx src/main.ts",
     "start": "tsx src/main.ts",
+    "seed:phase1-samples": "tsx scripts/seed-phase1-samples.ts",
     "test:integration": "tsx --test --test-concurrency=1 test/**/*.integration.test.ts"
   },
   "dependencies": {

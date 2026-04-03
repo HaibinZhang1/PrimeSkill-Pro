@@ -74,6 +74,50 @@ export interface NativeApplyInstallTicketResult {
   localRegistryPath: string;
 }
 
+export interface NativeInstallationDetail {
+  install: NativeLocalInstallRecord & {
+    contentManagementMode: string;
+    packageUri: string;
+    targetRootPath: string;
+    removedAt?: string;
+    finalStatus: string;
+    fileCount: number;
+  };
+  files: Array<{
+    installRecordId: number;
+    filePath: string;
+    relativePath: string;
+    targetRootPath: string;
+    contentManagementMode: string;
+    existedBefore: boolean;
+    sha256Before?: string;
+    sha256After?: string;
+    managedBlockBegin?: string;
+    managedBlockEnd?: string;
+  }>;
+}
+
+export interface NativeInstallationVerification {
+  installRecordId: number;
+  resolvedTargetPath: string;
+  verificationStatus: 'verified' | 'drifted';
+  verifiedAt: string;
+  driftReasons: string[];
+  files: Array<{
+    installRecordId: number;
+    filePath: string;
+    relativePath: string;
+    contentManagementMode: string;
+    exists: boolean;
+    expectedSha256?: string;
+    currentSha256?: string;
+    hashMatches: boolean;
+    managedBlockPresent?: boolean;
+    status: 'verified' | 'drifted';
+    driftReasons: string[];
+  }>;
+}
+
 export interface NativeInstallProgressEvent {
   installRecordId: number;
   ticketId: string;
@@ -141,11 +185,49 @@ export async function applyInstallTicketNative(
   return invoke<NativeApplyInstallTicketResult>('apply_install_ticket', { input });
 }
 
+export async function uninstallInstallationNative(
+  input: NativeApplyInstallTicketInput
+): Promise<NativeApplyInstallTicketResult> {
+  if (!hasTauriRuntime()) {
+    throw new Error('tauri runtime unavailable');
+  }
+  return invoke<NativeApplyInstallTicketResult>('uninstall_installation', { input });
+}
+
+export async function rollbackInstallationNative(
+  input: NativeApplyInstallTicketInput
+): Promise<NativeApplyInstallTicketResult> {
+  if (!hasTauriRuntime()) {
+    throw new Error('tauri runtime unavailable');
+  }
+  return invoke<NativeApplyInstallTicketResult>('rollback_installation', { input });
+}
+
 export async function listLocalInstallsNative(): Promise<NativeLocalInstallRecord[]> {
   if (!hasTauriRuntime()) {
     throw new Error('tauri runtime unavailable');
   }
   return invoke<NativeLocalInstallRecord[]>('list_local_installs');
+}
+
+export async function getInstallationDetailNative(installRecordId: number): Promise<NativeInstallationDetail | null> {
+  if (!hasTauriRuntime()) {
+    throw new Error('tauri runtime unavailable');
+  }
+  return invoke<NativeInstallationDetail | null>('get_installation_detail', {
+    input: { installRecordId }
+  });
+}
+
+export async function verifyInstallationNative(
+  installRecordId: number
+): Promise<NativeInstallationVerification> {
+  if (!hasTauriRuntime()) {
+    throw new Error('tauri runtime unavailable');
+  }
+  return invoke<NativeInstallationVerification>('verify_installation', {
+    input: { installRecordId }
+  });
 }
 
 export async function listenInstallProgressNative(
