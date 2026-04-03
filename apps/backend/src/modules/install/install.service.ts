@@ -36,6 +36,7 @@ interface PreparedInstallTarget {
   toolInstanceId: number;
   clientDeviceId: number;
   osType: string;
+  trustStatus: string;
   skillId: number;
   skillVersionId: number;
   skillKey: string;
@@ -49,6 +50,7 @@ interface PreparedInstallTarget {
   filenameTemplate: string | null;
   packagingMode: string;
   contentManagementMode: string;
+  managedBlockMarker: string | null;
   pathVariables: string[];
   workspacePath: string | null;
   workspaceRegistryId: number | null;
@@ -215,6 +217,17 @@ export class InstallService {
       const retryToken = consumeMode === 'idempotent_retry' ? `rt_${randomUUID().replace(/-/g, '')}` : null;
       const expiresAt = new Date(Date.now() + 15 * 60_000);
       const manifest = this.buildManifestSnapshot(ticketId, installRecordId, prepared, variables, retryToken);
+
+      await tx.query(
+        `
+          UPDATE install_record
+          SET manifest_snapshot_json = $2::jsonb,
+              updated_at = NOW(),
+              updated_by = $3
+          WHERE id = $1
+        `,
+        [installRecordId, JSON.stringify(manifest), actor.userId]
+      );
 
       await tx.query(
         `
@@ -586,8 +599,8 @@ export class InstallService {
     input: CreateInstallTicketRequestDto,
     userId: number
   ): Promise<PreparedInstallTarget> {
-    const toolResult = await tx.query<{ user_id: number; client_device_id: number }>(
-      `SELECT user_id, client_device_id FROM tool_instance WHERE id = $1`,
+    const toolResult = await tx.query<{ user_id: number; client_device_id: number; trust_status: string }>(
+      `SELECT user_id, client_device_id, trust_status FROM tool_instance WHERE id = $1`,
       [input.toolInstanceId]
     );
     const tool = toolResult.rows[0];
@@ -597,6 +610,9 @@ export class InstallService {
     if (tool.user_id !== userId) {
       throw new AppException('PERM_NO_USE_PERMISSION', 403, 'tool instance forbidden');
     }
+    if (tool.trust_status !== 'verified') {
+      throw new AppException('TOOL_NOT_SUPPORTED', 422, 'only verified tool instances are installable in this flow');
+    }
 
     const prepared = await tx.query<PreparedInstallTarget>(
       `
@@ -604,6 +620,7 @@ export class InstallService {
           ti.id AS "toolInstanceId",
           ti.client_device_id AS "clientDeviceId",
           ti.os_type AS "osType",
+          ti.trust_status AS "trustStatus",
           s.id AS "skillId",
           sv.id AS "skillVersionId",
           s.skill_key AS "skillKey",
@@ -617,20 +634,24 @@ export class InstallService {
           tpl.filename_template AS "filenameTemplate",
           tpl.packaging_mode AS "packagingMode",
           tpl.content_management_mode AS "contentManagementMode",
+          tpl.managed_block_marker AS "managedBlockMarker",
           ARRAY(SELECT jsonb_array_elements_text(tpl.path_variables_json)) AS "pathVariables",
           wr.workspace_path AS "workspacePath",
           wr.id AS "workspaceRegistryId"
         FROM tool_instance ti
         JOIN skill s ON s.id = $1
         JOIN skill_version sv ON sv.id = $2 AND sv.skill_id = s.id
-        LEFT JOIN workspace_registry wr ON wr.id = $3
+        LEFT JOIN workspace_registry wr
+          ON wr.id = $3
+         AND wr.user_id = ti.user_id
+         AND wr.client_device_id = ti.client_device_id
         JOIN ai_tool_install_target_template tpl
           ON tpl.tool_id = ti.tool_id
          AND tpl.os_type = ti.os_type
          AND tpl.scope_type = $4
          AND tpl.release_status = 'active'
+         AND tpl.verification_status = 'verified'
         WHERE ti.id = $5
-          AND (tpl.is_default = TRUE OR tpl.verification_status = 'verified')
         ORDER BY tpl.priority ASC
         LIMIT 1
       `,
@@ -702,7 +723,8 @@ export class InstallService {
         targetPathTemplate: prepared.targetPathTemplate,
         filenameTemplate: prepared.filenameTemplate ?? undefined,
         packagingMode: prepared.packagingMode,
-        contentManagementMode: prepared.contentManagementMode
+        contentManagementMode: prepared.contentManagementMode,
+        managedBlockMarker: prepared.managedBlockMarker ?? undefined
       },
       variables,
       verifyRules: ['checksum', 'signature']

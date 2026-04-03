@@ -138,6 +138,10 @@ export class InstallManifestTemplateDto {
 
   @IsString()
   contentManagementMode!: string;
+
+  @IsOptional()
+  @IsString()
+  managedBlockMarker?: string;
 }
 
 export class InstallManifestResponseDto {

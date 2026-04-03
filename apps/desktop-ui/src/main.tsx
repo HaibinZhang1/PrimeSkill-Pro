@@ -1,24 +1,44 @@
 import './styles.css';
 
-import {
-  loadBackendHealth,
-  resolveApiBaseUrl,
-  resolveDesktopAuthToken,
-  searchMarketplaceSkills,
-  createInstallTicket,
-  type CreateInstallTicketInput,
-  type InstallTicketPayload,
-  type BackendHealth,
-  type MarketplaceSearchResponse,
-  type MarketplaceSkill
-} from './api-client';
-import { commandNamespace } from './ipc-client';
-import { loadNativeBootstrapStatus, tauriRuntimeLabel, type NativeBootstrapStatus } from './tauri-client';
-
 import React, { startTransition, useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 
-const defaultToolContext = ['cursor', 'codex'];
+import {
+  createInstallTicket,
+  listMyInstalls,
+  listMyToolInstances,
+  listMyWorkspaces,
+  loadBackendHealth,
+  registerClientDevice,
+  reportToolInstances,
+  reportWorkspaces,
+  resolveApiBaseUrl,
+  resolveDesktopAuthToken,
+  searchMarketplaceSkills,
+  type BackendHealth,
+  type InstallTicketPayload,
+  type MarketplaceSearchResponse,
+  type MarketplaceSkill,
+  type MyInstall,
+  type MyToolInstance,
+  type MyWorkspace
+} from './api-client';
+import { commandNamespace } from './ipc-client';
+import {
+  applyInstallTicketNative,
+  hasTauriRuntime,
+  listenInstallProgressNative,
+  listToolInstancesNative,
+  loadNativeBootstrapStatus,
+  previewInstallTargetNative,
+  selectWorkspaceNative,
+  tauriRuntimeLabel,
+  type NativeApplyInstallTicketResult,
+  type NativeBootstrapStatus,
+  type NativePreviewInstallTarget
+} from './tauri-client';
+
+const defaultToolContext = ['cursor', 'opencode'];
 const resultPageSize = 6;
 
 function statusLabel(ok: boolean, readyText: string, fallbackText: string) {
@@ -27,6 +47,19 @@ function statusLabel(ok: boolean, readyText: string, fallbackText: string) {
 
 function formatConfidence(score: number) {
   return `${Math.round(score * 100)}%`;
+}
+
+function formatDateTime(value?: string) {
+  if (!value) {
+    return 'n/a';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString();
 }
 
 function SkillCard({ skill, onClick }: { skill: MarketplaceSkill; onClick?: (skill: MarketplaceSkill) => void }) {
@@ -67,17 +100,86 @@ function SkillCard({ skill, onClick }: { skill: MarketplaceSkill; onClick?: (ski
   );
 }
 
+function LoadingCards() {
+  return (
+    <div className="card-grid">
+      {Array.from({ length: 3 }, (_, index) => (
+        <div key={`loading-${index}`} className="skill-card skill-card--loading">
+          <div className="skeleton skeleton--sm" />
+          <div className="skeleton skeleton--lg" />
+          <div className="skeleton skeleton--md" />
+          <div className="skeleton skeleton--md" />
+          <div className="skeleton skeleton--chips" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InstalledSection({ installs }: { installs: MyInstall[] }) {
+  return (
+    <section className="results-section" id="installs">
+      <div className="results-section__header">
+        <div>
+          <span className="eyebrow">My installs</span>
+          <h2>Installed on this desktop</h2>
+        </div>
+        <p>Data comes from `GET /api/my/installs`, backed by `local_install_binding` for the current device.</p>
+      </div>
+
+      {installs.length === 0 ? (
+        <div className="feedback-card">
+          <strong>No installed skills yet.</strong>
+          <p>Run the install wizard from any supported Cursor or OpenCode skill card to materialize the first local binding.</p>
+        </div>
+      ) : (
+        <div className="installed-grid">
+          {installs.map((install) => (
+            <article key={install.bindingId} className="installed-card">
+              <div className="skill-card__meta">
+                <span className="eyebrow">{install.toolName ?? install.toolCode ?? 'tool'}</span>
+                <span className="pill pill--good">{install.installStatus}</span>
+              </div>
+              <h3>{install.skillName}</h3>
+              <p className="skill-card__summary">{install.skillKey}</p>
+              <div className="installed-card__facts">
+                <span>{install.targetScope}</span>
+                <span>{install.workspaceName ?? install.workspacePath ?? 'workspace n/a'}</span>
+              </div>
+              <p className="skill-card__reason">{install.resolvedTargetPath}</p>
+              <div className="installed-card__meta">
+                <span>v{install.skillVersion}</span>
+                <span>{formatDateTime(install.installedAt)}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function StatusPanel({
   nativeStatus,
   nativeError,
   backendHealth,
   backendError,
+  runtimeSyncState,
+  runtimeSyncError,
+  toolCount,
+  workspaceCount,
+  installCount,
   marketplace
 }: {
   nativeStatus: NativeBootstrapStatus | null;
   nativeError: string | null;
   backendHealth: BackendHealth | null;
   backendError: string | null;
+  runtimeSyncState: 'idle' | 'syncing' | 'ready' | 'fallback' | 'failed';
+  runtimeSyncError: string | null;
+  toolCount: number;
+  workspaceCount: number;
+  installCount: number;
   marketplace: MarketplaceSearchResponse | null;
 }) {
   const nativeReady = Boolean(nativeStatus);
@@ -105,6 +207,17 @@ function StatusPanel({
           <p>{backendReady ? `Service: ${backendHealth?.service}` : backendError ?? 'Waiting for backend health.'}</p>
         </div>
         <div className="status-card">
+          <span className={`pill ${runtimeSyncState === 'ready' ? 'pill--good' : 'pill--muted'}`}>
+            Runtime sync
+          </span>
+          <strong>{runtimeSyncState}</strong>
+          <p>
+            {runtimeSyncError
+              ? runtimeSyncError
+              : `${toolCount} tools, ${workspaceCount} workspaces, ${installCount} installs are now flowing through backend APIs.`}
+          </p>
+        </div>
+        <div className="status-card">
           <span className="pill pill--muted">Marketplace feed</span>
           <strong>{marketplace ? marketplace.source : 'pending'}</strong>
           <p>
@@ -115,11 +228,6 @@ function StatusPanel({
               : 'Fetching marketplace cards from backend.'}
           </p>
         </div>
-        <div className="status-card">
-          <span className="pill pill--muted">Desktop auth</span>
-          <strong>Bearer dev token</strong>
-          <p>{resolveDesktopAuthToken().slice(0, 18)}...</p>
-        </div>
       </div>
       <div className="status-footer">
         <span>IPC namespace: {commandNamespace()}</span>
@@ -128,66 +236,166 @@ function StatusPanel({
   );
 }
 
-function LoadingCards() {
-  return (
-    <div className="card-grid">
-      {Array.from({ length: 3 }, (_, index) => (
-        <div key={`loading-${index}`} className="skill-card skill-card--loading">
-          <div className="skeleton skeleton--sm" />
-          <div className="skeleton skeleton--lg" />
-          <div className="skeleton skeleton--md" />
-          <div className="skeleton skeleton--md" />
-          <div className="skeleton skeleton--chips" />
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function SkillDetailDrawer({
   skill,
+  deviceToken,
+  toolInstances,
+  workspaces,
+  onRequestWorkspace,
+  onInstallCompleted,
   onClose
 }: {
   skill: MarketplaceSkill;
+  deviceToken: string | null;
+  toolInstances: MyToolInstance[];
+  workspaces: MyWorkspace[];
+  onRequestWorkspace: () => Promise<MyWorkspace | null>;
+  onInstallCompleted: () => Promise<void>;
   onClose: () => void;
 }) {
-  const [targetScope, setTargetScope] = useState<'global' | 'project'>(skill.recommendedInstallMode);
-  const [toolInstanceId, setToolInstanceId] = useState<number>(-1);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const supportedTools = toolInstances.filter(
+    (item) =>
+      item.trustStatus === 'verified' &&
+      (item.toolCode === 'cursor' || item.toolCode === 'opencode') &&
+      skill.supportedTools.includes(item.toolCode)
+  );
+
+  const [toolInstanceId, setToolInstanceId] = useState<number>(supportedTools[0]?.toolInstanceId ?? 0);
+  const [workspaceRegistryId, setWorkspaceRegistryId] = useState<number>(workspaces[0]?.workspaceRegistryId ?? 0);
+  const [targetScope] = useState<'project'>('project');
+  const [preview, setPreview] = useState<NativePreviewInstallTarget | null>(null);
   const [ticketResult, setTicketResult] = useState<InstallTicketPayload | null>(null);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [applyResult, setApplyResult] = useState<NativeApplyInstallTicketResult | null>(null);
+  const [currentStage, setCurrentStage] = useState<string>('idle');
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const [isCreatingTicket, setIsCreatingTicket] = useState(false);
+  const [isApplying, setIsApplying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleInstallPreview = async () => {
-    setIsSubmitting(true);
-    setSubmitError(null);
-    setTicketResult(null);
+  useEffect(() => {
+    if (!toolInstanceId && supportedTools[0]) {
+      setToolInstanceId(supportedTools[0].toolInstanceId);
+    }
+  }, [supportedTools, toolInstanceId]);
 
-    const input: CreateInstallTicketInput = {
-      skillId: skill.skillId,
-      skillVersionId: skill.skillVersionId,
-      operationType: 'install',
-      targetScope,
-      toolInstanceId,
-      idempotencyKey: `idem_${Date.now()}_${Math.random()}`
-    };
+  useEffect(() => {
+    if (!workspaceRegistryId && workspaces[0]) {
+      setWorkspaceRegistryId(workspaces[0].workspaceRegistryId);
+    }
+  }, [workspaceRegistryId, workspaces]);
 
-    if (targetScope === 'project') {
-      input.workspaceRegistryId = -1; // Mock value for demo
+  const selectedTool = supportedTools.find((item) => item.toolInstanceId === toolInstanceId) ?? supportedTools[0];
+  const selectedWorkspace =
+    workspaces.find((item) => item.workspaceRegistryId === workspaceRegistryId) ?? workspaces[0] ?? null;
+
+  const runPreview = async () => {
+    if (!selectedTool || !selectedWorkspace) {
+      throw new Error('Select a verified tool instance and workspace first');
     }
 
+    setIsPreviewing(true);
+    setError(null);
     try {
-      const result = await createInstallTicket(input);
-      setTicketResult(result);
-    } catch (e: unknown) {
-      setSubmitError(e instanceof Error ? e.message : 'Unknown error creating ticket');
+      const nextPreview = await previewInstallTargetNative({
+        toolCode: selectedTool.toolCode,
+        scopeType: targetScope,
+        skillKey: skill.name.toLowerCase().replace(/\s+/g, '-'),
+        workspacePath: selectedWorkspace.workspacePath
+      });
+      setPreview(nextPreview);
+      return nextPreview;
     } finally {
-      setIsSubmitting(false);
+      setIsPreviewing(false);
+    }
+  };
+
+  const handleCreateTicket = async () => {
+    if (!selectedTool || !selectedWorkspace) {
+      setError('A verified tool instance and workspace are required');
+      return;
+    }
+
+    setIsCreatingTicket(true);
+    setError(null);
+    setApplyResult(null);
+
+    try {
+      if (!preview) {
+        await runPreview();
+      }
+
+      const result = await createInstallTicket({
+        skillId: skill.skillId,
+        skillVersionId: skill.skillVersionId,
+        operationType: 'install',
+        targetScope,
+        toolInstanceId: selectedTool.toolInstanceId,
+        workspaceRegistryId: selectedWorkspace.workspaceRegistryId,
+        idempotencyKey: `idem_${selectedTool.toolCode}_${selectedWorkspace.workspaceRegistryId}_${Date.now()}`
+      });
+      setTicketResult(result);
+      setCurrentStage('ticket_issued');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to create install ticket');
+    } finally {
+      setIsCreatingTicket(false);
+    }
+  };
+
+  const handleApplyTicket = async () => {
+    if (!ticketResult) {
+      setError('Create an install ticket first');
+      return;
+    }
+    if (!deviceToken) {
+      setError('Device registration is required before applying an install ticket');
+      return;
+    }
+
+    setIsApplying(true);
+    setError(null);
+    setApplyResult(null);
+
+    const unlisten = await listenInstallProgressNative((event) => {
+      if (event.ticketId === ticketResult.ticketId) {
+        setCurrentStage(event.stage);
+      }
+    });
+
+    try {
+      const result = await applyInstallTicketNative({
+        apiBaseUrl: resolveApiBaseUrl(),
+        authToken: resolveDesktopAuthToken(),
+        deviceToken,
+        ticketId: ticketResult.ticketId,
+        traceId: `trace_install_${ticketResult.installRecordId}_${Date.now()}`
+      });
+      setApplyResult(result);
+      setCurrentStage(result.finalStatus);
+      await onInstallCompleted();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to apply install ticket');
+      setCurrentStage('failed');
+    } finally {
+      unlisten();
+      setIsApplying(false);
+    }
+  };
+
+  const handleAddWorkspace = async () => {
+    try {
+      const created = await onRequestWorkspace();
+      if (created) {
+        setWorkspaceRegistryId(created.workspaceRegistryId);
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to register workspace');
     }
   };
 
   return (
     <div className="drawer-overlay" onClick={onClose}>
-      <aside className="drawer" onClick={(e) => e.stopPropagation()}>
+      <aside className="drawer" onClick={(event) => event.stopPropagation()}>
         <header className="drawer__header">
           <h2>{skill.name}</h2>
           <button type="button" className="drawer__close" onClick={onClose} aria-label="Close details">
@@ -200,84 +408,104 @@ function SkillDetailDrawer({
             <span className="eyebrow">{skill.category}</span>
             <span className="pill pill--muted">{formatConfidence(skill.confidenceScore)} match</span>
           </div>
-
           <p className="skill-card__summary">{skill.summary}</p>
-          <div className="skill-card__reason">
-            <strong>Match specific:</strong><br/>
-            {skill.whyMatched}
-          </div>
+          <p className="skill-card__reason">{skill.whyMatched}</p>
 
-          <div className="tag-row">
-            {skill.tags.map((tag) => (
-              <span key={`drawer-${skill.skillId}-${tag}`} className="pill pill--ghost">
-                {tag}
-              </span>
-            ))}
-          </div>
-
-          <div className="tool-row" style={{ marginTop: 8 }}>
-            {skill.supportedTools.map((tool) => (
-              <span key={`drawer-${skill.skillVersionId}-${tool}`} className="tool-chip">
-                {tool}
-              </span>
-            ))}
-          </div>
-          
-          <div className="install-form">
-            <h3>准备安装 / Install Preview</h3>
-            <p style={{ fontSize: '0.9rem', color: 'var(--muted)' }}>
-              Configure your installation target to request an install ticket.
-            </p>
+          <div className="wizard-card">
+            <div className="wizard-card__header">
+              <div>
+                <span className="eyebrow">Project install wizard</span>
+                <h3>Verified path only</h3>
+              </div>
+              <span className="pill pill--good">{targetScope}</span>
+            </div>
 
             <div className="install-form__field">
-              <label>Target Scope</label>
-              <select value={targetScope} onChange={(e) => setTargetScope(e.target.value as 'global' | 'project')}>
-                <option value="project">Project (Workspace specific)</option>
-                <option value="global">Global (System wide)</option>
+              <label>Verified tool instance</label>
+              <select value={toolInstanceId} onChange={(event) => setToolInstanceId(Number(event.target.value))}>
+                {supportedTools.length === 0 ? <option value={0}>No supported verified tools discovered</option> : null}
+                {supportedTools.map((item) => (
+                  <option key={item.toolInstanceId} value={item.toolInstanceId}>
+                    {item.toolName} {item.toolVersion ? `(${item.toolVersion})` : ''} - {item.toolCode}
+                  </option>
+                ))}
               </select>
             </div>
 
             <div className="install-form__field">
-              <label>Target Tool Environment</label>
-              <select value={toolInstanceId} onChange={(e) => setToolInstanceId(Number(e.target.value))}>
-                <option value={-1}>Demo Mock Cursor Instance (-1)</option>
-                <option value={-2}>Demo Mock VSCode Instance (-2)</option>
+              <label>Workspace</label>
+              <select
+                value={workspaceRegistryId}
+                onChange={(event) => setWorkspaceRegistryId(Number(event.target.value))}
+              >
+                {workspaces.length === 0 ? <option value={0}>No workspace registered yet</option> : null}
+                {workspaces.map((item) => (
+                  <option key={item.workspaceRegistryId} value={item.workspaceRegistryId}>
+                    {item.workspaceName ?? item.workspacePath}
+                  </option>
+                ))}
               </select>
+              <button type="button" className="button button--secondary" onClick={handleAddWorkspace}>
+                Select workspace via Tauri
+              </button>
             </div>
 
-            {submitError && (
-              <div className="feedback-card feedback-card--error" style={{ marginTop: 8 }}>
-                <strong>Failed to create ticket</strong>
-                <p>{submitError}</p>
-              </div>
-            )}
+            <div className="wizard-actions">
+              <button type="button" className="button button--secondary" onClick={() => void runPreview()} disabled={isPreviewing}>
+                {isPreviewing ? 'Previewing...' : 'Preview target'}
+              </button>
+              <button type="button" className="button button--secondary" onClick={() => void handleCreateTicket()} disabled={isCreatingTicket || supportedTools.length === 0}>
+                {isCreatingTicket ? 'Creating...' : 'Create install ticket'}
+              </button>
+              <button type="button" className="button" onClick={() => void handleApplyTicket()} disabled={isApplying || !ticketResult}>
+                {isApplying ? 'Applying...' : 'Apply in native core'}
+              </button>
+            </div>
 
-            {ticketResult && (
-              <div className="ticket-result">
-                <strong>Ticket Created Successfully!</strong>
-                <p>Ticket ID: <code>{ticketResult.ticketId}</code></p>
-                <p>Record ID: <code>{ticketResult.installRecordId}</code></p>
-                <p>Consume Mode: <code>{ticketResult.consumeMode}</code></p>
-                <p>Expires At: <code>{ticketResult.expiresAt}</code></p>
+            {preview ? (
+              <div className="wizard-output">
+                <strong>Preview</strong>
+                <p>{preview.templateCode}</p>
+                <p>{preview.resolvedTargetPath}</p>
               </div>
-            )}
+            ) : null}
+
+            {ticketResult ? (
+              <div className="wizard-output">
+                <strong>Install ticket</strong>
+                <p>{ticketResult.ticketId}</p>
+                <p>record #{ticketResult.installRecordId}</p>
+                <p>expires {formatDateTime(ticketResult.expiresAt)}</p>
+              </div>
+            ) : null}
+
+            <div className="wizard-output">
+              <strong>Current stage</strong>
+              <p>{currentStage}</p>
+            </div>
+
+            {applyResult ? (
+              <div className="wizard-output wizard-output--success">
+                <strong>Final result</strong>
+                <p>{applyResult.finalStatus}</p>
+                <p>{applyResult.resolvedTargetPath}</p>
+                <p>{applyResult.localRegistryPath}</p>
+              </div>
+            ) : null}
+
+            {error ? (
+              <div className="feedback-card feedback-card--error">
+                <strong>Install flow failed</strong>
+                <p>{error}</p>
+              </div>
+            ) : null}
           </div>
         </div>
 
         <footer className="drawer__footer">
-          <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
-            <button type="button" className="button button--secondary" onClick={onClose}>
-              Close
-            </button>
-            <button 
-              type="button" 
-              className="button" 
-              onClick={handleInstallPreview}
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? 'Requesting...' : 'Request Install Ticket'}
-            </button>
-          </div>
+          <button type="button" className="button button--secondary" onClick={onClose}>
+            Close
+          </button>
         </footer>
       </aside>
     </div>
@@ -296,6 +524,89 @@ function DesktopApp() {
   const [backendHealth, setBackendHealth] = useState<BackendHealth | null>(null);
   const [backendError, setBackendError] = useState<string | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<MarketplaceSkill | null>(null);
+  const [toolInstances, setToolInstances] = useState<MyToolInstance[]>([]);
+  const [workspaces, setWorkspaces] = useState<MyWorkspace[]>([]);
+  const [installs, setInstalls] = useState<MyInstall[]>([]);
+  const [runtimeSyncState, setRuntimeSyncState] = useState<'idle' | 'syncing' | 'ready' | 'fallback' | 'failed'>('idle');
+  const [runtimeSyncError, setRuntimeSyncError] = useState<string | null>(null);
+  const [deviceToken, setDeviceToken] = useState<string | null>(null);
+
+  const refreshRuntimeLists = async () => {
+    const [tools, workspacesResponse, installsResponse] = await Promise.all([
+      listMyToolInstances(),
+      listMyWorkspaces(),
+      listMyInstalls()
+    ]);
+
+    setToolInstances(tools.items);
+    setWorkspaces(workspacesResponse.items);
+    setInstalls(installsResponse.items);
+  };
+
+  const syncRuntimeData = async () => {
+    if (!hasTauriRuntime()) {
+      setRuntimeSyncState('fallback');
+      setRuntimeSyncError('Tauri runtime unavailable, native install commands are disabled in browser preview.');
+      return;
+    }
+
+    setRuntimeSyncState('syncing');
+    setRuntimeSyncError(null);
+
+    try {
+      const discovery = await listToolInstancesNative();
+      setDeviceToken(discovery.clientDevice.deviceFingerprint);
+
+      await registerClientDevice({
+        deviceFingerprint: discovery.clientDevice.deviceFingerprint,
+        deviceName: discovery.clientDevice.deviceName,
+        osType: discovery.clientDevice.osType,
+        desktopAppVersion: discovery.clientDevice.desktopAppVersion,
+        nativeCoreVersion: discovery.clientDevice.nativeCoreVersion
+      });
+
+      await reportToolInstances({
+        items: discovery.items.map((item) => ({
+          toolCode: item.toolCode,
+          toolVersion: item.toolVersion,
+          osType: item.osType,
+          detectedInstallPath: item.detectedInstallPath,
+          detectedConfigPath: item.detectedConfigPath,
+          discoveredTargets: item.discoveredTargets,
+          detectionSource: item.detectionSource as 'auto' | 'manual' | 'imported',
+          trustStatus: item.trustStatus as 'detected' | 'verified' | 'disabled'
+        }))
+      });
+
+      await refreshRuntimeLists();
+      setRuntimeSyncState('ready');
+    } catch (error: unknown) {
+      setRuntimeSyncState('failed');
+      setRuntimeSyncError(error instanceof Error ? error.message : 'Unknown runtime sync error');
+    }
+  };
+
+  const handleWorkspaceRequest = async () => {
+    const selection = await selectWorkspaceNative();
+    const response = await reportWorkspaces({
+      items: [
+        {
+          workspaceName: selection.workspaceName,
+          workspacePath: selection.workspacePath,
+          projectFingerprint: selection.projectFingerprint,
+          repoRemote: selection.repoRemote,
+          repoBranch: selection.repoBranch
+        }
+      ]
+    });
+
+    setWorkspaces((current) => {
+      const next = current.filter((item) => item.workspaceRegistryId !== response.items[0].workspaceRegistryId);
+      return [response.items[0], ...next];
+    });
+
+    return response.items[0] ?? null;
+  };
 
   useEffect(() => {
     let active = true;
@@ -343,6 +654,10 @@ function DesktopApp() {
     return () => {
       active = false;
     };
+  }, []);
+
+  useEffect(() => {
+    void syncRuntimeData();
   }, []);
 
   useEffect(() => {
@@ -404,18 +719,19 @@ function DesktopApp() {
           </div>
           <nav className="topnav" aria-label="Primary">
             <a href="#marketplace">Explore</a>
+            <a href="#installs">My installs</a>
             <a href="#status">Environment</a>
-            <a href="#next">Install flow next</a>
           </nav>
         </header>
 
         <section className="hero" id="marketplace">
           <div className="hero__content">
-            <span className="pill pill--brand">Desktop first marketplace</span>
-            <h2>Search, preview, and stage internal agent skills from one desktop surface.</h2>
+            <span className="pill pill--brand">Project install loop live</span>
+            <h2>Search, issue install tickets, apply verified project templates, and read back “my installs”.</h2>
             <p>
-              The shell is now a real marketplace landing page: it requests backend search data, adapts to empty catalogs,
-              and keeps native and backend diagnostics visible without taking over the product UI.
+              This shell now runs the first real installation chain: desktop UI syncs verified tool instances and
+              workspaces, backend signs project-scope install tickets, and native core materializes Cursor or OpenCode
+              targets before the backend records the local binding.
             </p>
             <div className="search-panel">
               <label className="search-panel__label" htmlFor="skill-search">
@@ -434,7 +750,7 @@ function DesktopApp() {
                 </button>
               </div>
               <div className="filter-row">
-                {['cursor', 'codex', 'cline', 'opencode'].map((tool) => {
+                {['cursor', 'opencode', 'cline', 'codex'].map((tool) => {
                   const active = activeTools.includes(tool);
                   return (
                     <button
@@ -458,13 +774,13 @@ function DesktopApp() {
           <div className="hero__summary">
             <div className="summary-card">
               <span className="eyebrow">Current focus</span>
-              <strong>Desktop marketplace first</strong>
-              <p>Install flow is intentionally deferred. This round is about discoverability, confidence, and demoability.</p>
+              <strong>Verified project scope only</strong>
+              <p>Install apply is intentionally limited to Cursor project rules and OpenCode project skills this round.</p>
             </div>
             <div className="summary-card">
-              <span className="eyebrow">Live contract</span>
-              <strong>`/api/desktop/search/skills`</strong>
-              <p>The homepage uses the same backend search route for both featured recommendations and typed search.</p>
+              <span className="eyebrow">Live contracts</span>
+              <strong>`/api/my/*` + Tauri install commands</strong>
+              <p>The drawer now uses real backend runtime APIs and Tauri commands instead of the previous mock preview.</p>
             </div>
           </div>
         </section>
@@ -500,15 +816,13 @@ function DesktopApp() {
           {!loadingMarketplace && !marketplaceError && marketplace && marketplace.items.length > 0 ? (
             <div className="card-grid">
               {marketplace.items.map((skill) => (
-                <SkillCard 
-                  key={`${skill.skillId}-${skill.skillVersionId}`} 
-                  skill={skill} 
-                  onClick={setSelectedSkill}
-                />
+                <SkillCard key={`${skill.skillId}-${skill.skillVersionId}`} skill={skill} onClick={setSelectedSkill} />
               ))}
             </div>
           ) : null}
         </section>
+
+        <InstalledSection installs={installs} />
 
         <section id="status">
           <StatusPanel
@@ -516,27 +830,27 @@ function DesktopApp() {
             nativeError={nativeError}
             backendHealth={backendHealth}
             backendError={backendError}
+            runtimeSyncState={runtimeSyncState}
+            runtimeSyncError={runtimeSyncError}
+            toolCount={toolInstances.length}
+            workspaceCount={workspaces.length}
+            installCount={installs.length}
             marketplace={marketplace}
           />
         </section>
-
-        <section className="next-section" id="next">
-          <div className="feedback-card">
-            <strong>Next build slice</strong>
-            <p>
-              The next natural step is wiring card actions into install preview, workspace selection, and ticket creation
-              using the existing backend install APIs and Tauri native commands.
-            </p>
-          </div>
-        </section>
       </section>
 
-      {selectedSkill && (
-        <SkillDetailDrawer 
-          skill={selectedSkill} 
-          onClose={() => setSelectedSkill(null)} 
+      {selectedSkill ? (
+        <SkillDetailDrawer
+          skill={selectedSkill}
+          deviceToken={deviceToken}
+          toolInstances={toolInstances}
+          workspaces={workspaces}
+          onRequestWorkspace={handleWorkspaceRequest}
+          onInstallCompleted={refreshRuntimeLists}
+          onClose={() => setSelectedSkill(null)}
         />
-      )}
+      ) : null}
     </main>
   );
 }

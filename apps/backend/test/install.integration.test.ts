@@ -160,11 +160,12 @@ test('install ticket lifecycle persists and blocks stage out-of-order', async ()
   assert.equal(reportRes.status, 200, JSON.stringify(reportRes.body));
   assert.deepEqual(reportRes.body, { ok: true });
 
-  const record = await queryDb<{ install_status: string }>(
-    'SELECT install_status FROM install_record WHERE id = $1',
+  const record = await queryDb<{ install_status: string; manifest_snapshot_json: string }>(
+    'SELECT install_status, manifest_snapshot_json::text AS manifest_snapshot_json FROM install_record WHERE id = $1',
     [installRecordId]
   );
   assert.equal(record.rows[0].install_status, 'success');
+  assert.match(record.rows[0].manifest_snapshot_json, /"ticketId":"tk_/);
 
   const binding = await queryDb<{ c: string }>(
     `
@@ -176,6 +177,14 @@ test('install ticket lifecycle persists and blocks stage out-of-order', async ()
     [installRecordId]
   );
   assert.equal(binding.rows[0].c, '1');
+
+  const myInstallsRes = await request(app.getHttpServer())
+    .get('/api/my/installs')
+    .set('authorization', authHeader);
+  assert.equal(myInstallsRes.status, 200, JSON.stringify(myInstallsRes.body));
+  assert.equal(myInstallsRes.body.items.length, 1);
+  assert.equal(myInstallsRes.body.items[0].installRecordId, installRecordId);
+  assert.equal(myInstallsRes.body.items[0].targetScope, 'project');
 });
 
 test('idempotent_retry ticket allows repeated consume with same retry token', async () => {

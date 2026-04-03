@@ -1,109 +1,128 @@
 # PrimeSkill Pro
 
-企业内网 Agent Skills 管理市场实现仓库（v1 foundation）。
+PrimeSkill Pro is an internal Agent Skills marketplace for desktop-first discovery and governed local installation.
 
-## Workspace Layout
+## Workspace layout
 
-- `apps/backend`: NestJS API skeleton
-- `apps/search-worker`: queue/索引 worker skeleton
-- `apps/admin-web`: 管理后台 skeleton
-- `apps/desktop-ui`: 桌面前端 skeleton
-- `apps/native-core`: Rust Native Core skeleton
-- `packages/contracts-openapi`: OpenAPI 契约
-- `packages/contracts-ipc`: IPC 命令/事件契约
-- `packages/contracts-events`: Queue 事件契约
-- `packages/shared-types`: 共享错误码/枚举/DTO
-- `infra/db/migrations`: PostgreSQL migration（M001-M009）
-- `infra/docker`: docker compose 与 nginx 配置
-- `infra/ci`: CI 门禁脚本与 pipeline 示例
+- `apps/backend`: NestJS backend and install ticket APIs
+- `apps/desktop-ui`: React desktop UI plus Tauri host
+- `apps/native-core`: Rust native install/runtime core
+- `apps/search-worker`: indexing and search worker skeleton
+- `apps/admin-web`: admin portal skeleton
+- `infra/db/migrations`: PostgreSQL schema migrations
 
-## Quick Checks
+## This round
 
-```bash
-./tests/foundation/p0_contracts_test.sh
-./tests/foundation/p0_migrations_test.sh
-./tests/foundation/p0_tauri_host_test.sh
-./scripts/ci/search_worker_queue_smoke_test.sh
-```
+This repo now includes the first project-scope install loop for verified templates:
 
-## Startup Baseline
+- Desktop UI syncs `client_device`, `tool_instance`, and `workspace_registry`
+- Backend issues install tickets with the existing install service
+- Native Core applies verified project templates for:
+  - Cursor project rules
+  - OpenCode project skills
+- Backend records `local_install_binding`
+- Desktop UI reads `GET /api/my/installs` to render “My installs”
 
-当前仓库已经具备以下最小启动入口：
+The current apply path is intentionally limited:
 
-- `pnpm dev:backend`
-- `pnpm dev:worker`
-- `pnpm dev:admin`
-- `pnpm dev:desktop`
-- `pnpm dev:desktop:tauri`
-- `SEARCH_WORKER_MODE=queue pnpm dev:worker`
+- project scope only
+- verified templates only
+- Cursor `cursor_project_rule`
+- OpenCode `opencode_project_skill`
 
-后端健康检查：
+## Local setup
 
-```bash
-curl http://127.0.0.1:3000/health
-```
-
-预期返回：
-
-```json
-{"ok":true,"service":"backend"}
-```
-
-## Local Setup
-
-1. 安装依赖：
+1. Install dependencies.
 
 ```bash
 pnpm install
 ```
 
-2. 准备环境变量：
+2. Prepare env files.
 
 ```bash
 cp .env.example .env
+cp apps/backend/.env.example apps/backend/.env
+cp apps/desktop-ui/.env.example apps/desktop-ui/.env
 ```
 
-3. 启动基础依赖：
+If the per-app `.env.example` files do not exist in your local branch yet, create `.env` files with the same backend URL and database/redis settings used by the root `.env.example`.
 
-```bash
-pnpm docker:up
-```
-
-4. 在另一个终端启动应用：
-
-```bash
-pnpm dev:backend
-pnpm dev:worker
-pnpm dev:admin
-pnpm dev:desktop
-```
-
-5. 运行最小启动验收：
-
-```bash
-pnpm test:startup
-pnpm test:worker:queue-smoke
-pnpm test:docker:acceptance
-```
-
-本地依赖栈的标准入口：
+3. Start infra.
 
 ```bash
 pnpm dev:infra
-pnpm dev:infra:down
 ```
 
-Docker 启动完整后，可直接在浏览器访问：
+Expected defaults:
+
+- PostgreSQL: `127.0.0.1:5432`
+- Redis: `127.0.0.1:6379`
+
+4. Start the backend.
 
 ```bash
-open http://127.0.0.1:8080
-curl http://127.0.0.1:8080/health
+pnpm dev:backend
 ```
 
-说明：
-- `admin-web` 当前是最小管理端壳。
-- `desktop-ui` 当前已补齐 `src-tauri` 宿主骨架，并通过 `native_bootstrap_status` 命令接入 `apps/native-core` 的最小联调。
-- `search-worker` 当前支持 standalone / queue 两种启动模式，默认由环境变量控制；可通过 `pnpm test:worker:queue-smoke` 验证 queue 启动入口本身可用。
-- 当前环境若未安装 `cargo`，`pnpm dev:desktop:tauri` 无法真正启动 Rust 宿主，但前端和宿主工程文件已经就位。
-- `pnpm dev:infra` 会启动 `postgres/redis/minio`，等待 PostgreSQL healthy 后执行 `db-init`，自动完成 migration 与 seed。
-- `pnpm test:docker:acceptance` 会拉起 Docker 栈，验收 `backend` 健康检查、`admin-web` 浏览器入口，以及核心 API 的 HTTP 链路。
+5. Start the desktop shell.
+
+```bash
+pnpm dev:desktop:tauri
+```
+
+If you only run `pnpm dev:desktop`, the React shell will load in browser preview mode, but native install commands will stay disabled.
+
+## Minimal verification
+
+1. Confirm backend health.
+
+```bash
+curl http://127.0.0.1:3000/health
+```
+
+2. Open the desktop app and wait for runtime sync to show discovered tools and the current device state.
+
+3. Search for a skill that supports `cursor` or `opencode`.
+
+4. Open the skill drawer and run the wizard:
+   - `Select workspace via Tauri`
+   - `Preview target`
+   - `Create install ticket`
+   - `Apply in native core`
+
+5. Validate the result:
+   - the drawer shows `ticket_issued -> downloading -> staging -> verifying -> committing -> success`
+   - the “My installs” section shows the new active binding
+   - a local file exists at one of the verified project targets:
+     - `<workspace>/.cursor/rules/<skill-slug>.mdc`
+     - `<workspace>/.opencode/skills/<skill-slug>/SKILL.md`
+
+6. Optional backend verification:
+
+```bash
+curl -H "Authorization: Bearer <desktop-token>" http://127.0.0.1:3000/api/my/installs
+```
+
+## Checks
+
+Type and unit checks used for this slice:
+
+```bash
+pnpm --filter @prime/backend exec tsc --noEmit
+pnpm --filter @prime/desktop-ui exec tsc --noEmit
+cd apps/native-core && cargo test
+```
+
+Backend integration tests require PostgreSQL and Redis to be running on the default local ports:
+
+```bash
+pnpm backend:test:integration
+```
+
+## Current gaps
+
+- Backend integration tests still depend on a real local PostgreSQL/Redis stack
+- Tauri apply currently writes a minimal placeholder payload instead of downloading and unpacking a real skill artifact
+- rollback and verify interfaces are preserved, but not implemented yet
+- browser preview mode cannot execute local installation

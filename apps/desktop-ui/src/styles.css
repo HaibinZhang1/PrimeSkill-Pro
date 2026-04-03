@@ -397,6 +397,70 @@ h3 {
   font-size: 0.82rem;
 }
 
+.installed-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.installed-card,
+.wizard-card,
+.wizard-output {
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  box-shadow: 0 18px 50px rgba(20, 33, 61, 0.08);
+}
+
+.installed-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px;
+  border-radius: 24px;
+}
+
+.installed-card__facts,
+.installed-card__meta,
+.wizard-actions,
+.wizard-card__header {
+  display: flex;
+  gap: 12px;
+}
+
+.installed-card__facts,
+.installed-card__meta {
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.wizard-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border-radius: 18px;
+}
+
+.wizard-card__header {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.wizard-actions {
+  flex-wrap: wrap;
+}
+
+.wizard-output {
+  padding: 14px 16px;
+  border-radius: 14px;
+}
+
+.wizard-output--success {
+  background: rgba(29, 111, 95, 0.08);
+}
+
 .status-panel {
   padding: 24px;
   border-radius: 28px;
@@ -567,6 +631,8 @@ h3 {
   padding: 24px;
   border-top: 1px solid var(--card-border);
   background: #fafafa;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .install-form {

@@ -54,6 +54,93 @@ export interface InstallTicketPayload {
   expiresAt: string;
 }
 
+export interface RegisterClientDeviceInput {
+  deviceFingerprint: string;
+  deviceName: string;
+  osType: string;
+  osVersion?: string;
+  desktopAppVersion?: string;
+  nativeCoreVersion?: string;
+}
+
+export interface RegisterClientDeviceResponse {
+  clientDeviceId: number;
+  deviceFingerprint: string;
+  status: 'active' | 'revoked' | 'offline';
+  lastSeenAt: string;
+}
+
+export interface MyToolInstance {
+  toolInstanceId: number;
+  clientDeviceId: number;
+  toolCode: string;
+  toolName: string;
+  toolVersion?: string;
+  osType: string;
+  detectedInstallPath?: string;
+  detectedConfigPath?: string;
+  discoveredTargets: string[];
+  detectionSource: 'auto' | 'manual' | 'imported';
+  trustStatus: 'detected' | 'verified' | 'disabled';
+  lastScannedAt?: string;
+}
+
+export interface ReportToolInstancesInput {
+  items: Array<{
+    toolCode: string;
+    toolVersion?: string;
+    osType: string;
+    detectedInstallPath?: string;
+    detectedConfigPath?: string;
+    discoveredTargets?: string[];
+    detectionSource?: 'auto' | 'manual' | 'imported';
+    trustStatus?: 'detected' | 'verified' | 'disabled';
+  }>;
+}
+
+export interface MyWorkspace {
+  workspaceRegistryId: number;
+  clientDeviceId: number;
+  workspaceName?: string;
+  workspacePath: string;
+  projectFingerprint: string;
+  repoRemote?: string;
+  repoBranch?: string;
+  lastUsedAt?: string;
+  updatedAt: string;
+}
+
+export interface ReportWorkspacesInput {
+  items: Array<{
+    workspaceName?: string;
+    workspacePath: string;
+    projectFingerprint: string;
+    repoRemote?: string;
+    repoBranch?: string;
+  }>;
+}
+
+export interface MyInstall {
+  bindingId: number;
+  installRecordId: number;
+  skillId: number;
+  skillVersionId: number;
+  skillKey: string;
+  skillName: string;
+  skillVersion: string;
+  toolInstanceId?: number;
+  toolCode?: string;
+  toolName?: string;
+  targetScope: 'global' | 'project';
+  workspaceRegistryId?: number;
+  workspaceName?: string;
+  workspacePath?: string;
+  resolvedTargetPath: string;
+  installStatus: string;
+  installedAt: string;
+  state: 'active' | 'removed' | 'drifted';
+}
+
 const defaultApiBaseUrl = 'http://127.0.0.1:3000';
 const defaultAuthPayload = {
   userId: 1,
@@ -104,7 +191,14 @@ async function readJson<T>(input: RequestInfo | URL, init?: RequestInit): Promis
   const response = await fetch(input, init);
 
   if (!response.ok) {
-    throw new Error(`backend responded with ${response.status}`);
+    let detail = '';
+    try {
+      const body = (await response.json()) as { code?: string; message?: string };
+      detail = body.message ?? body.code ?? '';
+    } catch {
+      detail = '';
+    }
+    throw new Error(detail ? `backend responded with ${response.status}: ${detail}` : `backend responded with ${response.status}`);
   }
 
   return (await response.json()) as T;
@@ -133,5 +227,49 @@ export async function createInstallTicket(input: CreateInstallTicketInput): Prom
     method: 'POST',
     headers: buildApiHeaders(),
     body: JSON.stringify(input)
+  });
+}
+
+export async function registerClientDevice(
+  input: RegisterClientDeviceInput
+): Promise<RegisterClientDeviceResponse> {
+  return readJson<RegisterClientDeviceResponse>(`${resolveApiBaseUrl()}/api/client-devices/register`, {
+    method: 'POST',
+    headers: buildApiHeaders(),
+    body: JSON.stringify(input)
+  });
+}
+
+export async function reportToolInstances(input: ReportToolInstancesInput): Promise<{ items: MyToolInstance[] }> {
+  return readJson<{ items: MyToolInstance[] }>(`${resolveApiBaseUrl()}/api/tool-instances/report`, {
+    method: 'POST',
+    headers: buildApiHeaders(),
+    body: JSON.stringify(input)
+  });
+}
+
+export async function reportWorkspaces(input: ReportWorkspacesInput): Promise<{ items: MyWorkspace[] }> {
+  return readJson<{ items: MyWorkspace[] }>(`${resolveApiBaseUrl()}/api/workspaces/report`, {
+    method: 'POST',
+    headers: buildApiHeaders(),
+    body: JSON.stringify(input)
+  });
+}
+
+export async function listMyToolInstances(): Promise<{ items: MyToolInstance[] }> {
+  return readJson<{ items: MyToolInstance[] }>(`${resolveApiBaseUrl()}/api/my/tool-instances`, {
+    headers: buildApiHeaders()
+  });
+}
+
+export async function listMyWorkspaces(): Promise<{ items: MyWorkspace[] }> {
+  return readJson<{ items: MyWorkspace[] }>(`${resolveApiBaseUrl()}/api/my/workspaces`, {
+    headers: buildApiHeaders()
+  });
+}
+
+export async function listMyInstalls(): Promise<{ items: MyInstall[] }> {
+  return readJson<{ items: MyInstall[] }>(`${resolveApiBaseUrl()}/api/my/installs`, {
+    headers: buildApiHeaders()
   });
 }
