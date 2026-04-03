@@ -5,10 +5,11 @@ import { InfraModule } from './common/infra.module';
 import { HealthController } from './health.controller';
 import { InstallModule } from './modules/install/install.module';
 import { SearchModule } from './modules/search/search.module';
+import { SkillModule } from './modules/skills/skill.module';
 import { TemplateModule } from './modules/templates/template.module';
 
 @Module({
-  imports: [InfraModule, InstallModule, SearchModule, TemplateModule],
+  imports: [InfraModule, InstallModule, SearchModule, SkillModule, TemplateModule],
   controllers: [HealthController],
   providers: [AuthMiddleware]
 })

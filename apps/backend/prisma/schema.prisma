@@ -1,0 +1,180 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Department {
+  id          BigInt   @id @default(autoincrement())
+  name        String   @db.VarChar(128)
+  code        String   @unique @db.VarChar(64)
+  parentId    BigInt?  @map("parent_id")
+  path        String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy   BigInt?  @map("created_by")
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy   BigInt?  @map("updated_by")
+
+  users       User[]
+  ownedSkills Skill[]  @relation("SkillOwnerDepartment")
+
+  @@map("department")
+}
+
+model User {
+  id               BigInt    @id @default(autoincrement())
+  username         String    @unique @db.VarChar(128)
+  displayName      String    @map("display_name") @db.VarChar(128)
+  email            String    @unique @db.VarChar(256)
+  employeeNo       String?   @map("employee_no") @db.VarChar(64)
+  departmentId     BigInt?   @map("department_id")
+  status           String    @default("active") @db.VarChar(32)
+  passwordHash     String?   @map("password_hash")
+  authSource       String    @default("local") @map("auth_source") @db.VarChar(32)
+  lastLoginAt      DateTime? @map("last_login_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy        BigInt?   @map("created_by")
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy        BigInt?   @map("updated_by")
+
+  department       Department?    @relation(fields: [departmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  ownedSkills      Skill[]        @relation("SkillOwnerUser")
+  createdVersions  SkillVersion[] @relation("SkillVersionCreatedBy")
+  submittedReviews ReviewTask[]   @relation("ReviewTaskSubmitter")
+  assignedReviews  ReviewTask[]   @relation("ReviewTaskReviewer")
+
+  @@map("user")
+}
+
+model SkillCategory {
+  id         BigInt          @id @default(autoincrement())
+  name       String          @db.VarChar(128)
+  parentId   BigInt?         @map("parent_id")
+  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy  BigInt?         @map("created_by")
+  updatedAt  DateTime        @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy  BigInt?         @map("updated_by")
+
+  parent     SkillCategory?  @relation("SkillCategoryTree", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  children   SkillCategory[] @relation("SkillCategoryTree")
+  skills     Skill[]
+
+  @@map("skill_category")
+}
+
+model SkillTag {
+  id             BigInt        @id @default(autoincrement())
+  name           String        @unique @db.VarChar(128)
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      BigInt?       @map("created_by")
+  updatedAt      DateTime      @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy      BigInt?       @map("updated_by")
+
+  skillRelations SkillTagRel[]
+
+  @@map("skill_tag")
+}
+
+model Skill {
+  id                BigInt         @id @default(autoincrement())
+  skillKey          String         @unique @map("skill_key") @db.VarChar(128)
+  name              String         @db.VarChar(256)
+  summary           String?
+  description       String?
+  ownerUserId       BigInt         @map("owner_user_id")
+  ownerDepartmentId BigInt?        @map("owner_department_id")
+  categoryId        BigInt?        @map("category_id")
+  status            String         @default("draft") @db.VarChar(32)
+  visibilityType    String         @default("department") @map("visibility_type") @db.VarChar(32)
+  currentVersionId  BigInt?        @map("current_version_id")
+  averageRating     Decimal        @default(0) @map("average_rating") @db.Decimal(3, 2)
+  favoriteCount     Int            @default(0) @map("favorite_count")
+  installCount      Int            @default(0) @map("install_count")
+  invokeCount       Int            @default(0) @map("invoke_count")
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         BigInt?        @map("created_by")
+  updatedAt         DateTime       @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy         BigInt?        @map("updated_by")
+
+  ownerUser         User           @relation("SkillOwnerUser", fields: [ownerUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  ownerDepartment   Department?    @relation("SkillOwnerDepartment", fields: [ownerDepartmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  category          SkillCategory? @relation(fields: [categoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  currentVersion    SkillVersion?  @relation("SkillCurrentVersion", fields: [currentVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  versions          SkillVersion[] @relation("SkillVersions")
+  tagRelations      SkillTagRel[]
+
+  @@index([ownerUserId, ownerDepartmentId], map: "idx_skill_owner")
+  @@index([status, visibilityType], map: "idx_skill_status_visibility")
+  @@map("skill")
+}
+
+model SkillVersion {
+  id                BigInt      @id @default(autoincrement())
+  skillId           BigInt      @map("skill_id")
+  version           String      @db.VarChar(64)
+  packageUri        String      @map("package_uri")
+  manifestJson      Json        @map("manifest_json")
+  readmeText        String?     @map("readme_text")
+  changelog         String?
+  aiToolsJson       Json        @map("ai_tools_json")
+  installModeJson   Json        @map("install_mode_json")
+  checksum          String      @db.VarChar(256)
+  signature         String?
+  reviewStatus      String      @default("pending") @map("review_status") @db.VarChar(32)
+  stage1IndexStatus String      @default("pending") @map("stage1_index_status") @db.VarChar(32)
+  stage2IndexStatus String      @default("pending") @map("stage2_index_status") @db.VarChar(32)
+  searchReadyAt     DateTime?   @map("search_ready_at") @db.Timestamptz(6)
+  publishedAt       DateTime?   @map("published_at") @db.Timestamptz(6)
+  createdAt         DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         BigInt      @map("created_by")
+  updatedAt         DateTime    @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy         BigInt?     @map("updated_by")
+
+  skill             Skill       @relation("SkillVersions", fields: [skillId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  creator           User        @relation("SkillVersionCreatedBy", fields: [createdBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  currentForSkill   Skill[]     @relation("SkillCurrentVersion")
+  reviewTasks       ReviewTask[]
+
+  @@unique([skillId, version])
+  @@index([stage1IndexStatus, stage2IndexStatus], map: "idx_skill_version_status")
+  @@map("skill_version")
+}
+
+model ReviewTask {
+  id             BigInt       @id @default(autoincrement())
+  skillVersionId BigInt       @map("skill_version_id")
+  submitterId    BigInt       @map("submitter_id")
+  reviewerId     BigInt?      @map("reviewer_id")
+  reviewRound    Int          @default(1) @map("review_round")
+  status         String       @default("created") @db.VarChar(32)
+  comment        String?
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      BigInt?      @map("created_by")
+  reviewedAt     DateTime?    @map("reviewed_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy      BigInt?      @map("updated_by")
+
+  skillVersion   SkillVersion @relation(fields: [skillVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  submitter      User         @relation("ReviewTaskSubmitter", fields: [submitterId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reviewer       User?        @relation("ReviewTaskReviewer", fields: [reviewerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([status, reviewerId], map: "idx_review_task_status")
+  @@map("review_task")
+}
+
+model SkillTagRel {
+  id        BigInt   @id @default(autoincrement())
+  skillId   BigInt   @map("skill_id")
+  tagId     BigInt   @map("tag_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy BigInt?  @map("created_by")
+
+  skill     Skill    @relation(fields: [skillId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tag       SkillTag @relation(fields: [tagId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([skillId, tagId])
+  @@map("skill_tag_rel")
+}
